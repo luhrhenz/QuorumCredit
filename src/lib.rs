@@ -180,6 +180,50 @@ impl QuorumCreditContract {
             .set(&DataKey::Loan(borrower), &loan);
     }
 
+    /// Withdraw a vouch before any loan is active, returning the exact stake to the voucher.
+    pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) {
+        voucher.require_auth();
+
+        // Block withdrawal if a loan record already exists for this borrower.
+        assert!(
+            env.storage()
+                .persistent()
+                .get::<DataKey, LoanRecord>(&DataKey::Loan(borrower.clone()))
+                .is_none(),
+            "loan already active"
+        );
+
+        // Load the vouches list; panic if absent.
+        let mut vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower.clone()))
+            .expect("vouch not found");
+
+        // Find the index of the matching VouchRecord.
+        let idx = vouches
+            .iter()
+            .position(|v| v.voucher == voucher)
+            .expect("vouch not found") as u32;
+
+        let stake = vouches.get(idx).unwrap().stake;
+        vouches.remove(idx);
+
+        // Persist updated list or remove the key if empty.
+        if vouches.is_empty() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Vouches(borrower));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Vouches(borrower), &vouches);
+        }
+
+        // Return exact stake to voucher.
+        Self::token(&env).transfer(&env.current_contract_address(), &voucher, &stake);
+    }
+
     // ── Views ─────────────────────────────────────────────────────────────────
 
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
@@ -278,5 +322,90 @@ mod tests {
 
         assert_eq!(token.balance(&voucher), 9_500_000);
         assert!(client.get_loan(&borrower).unwrap().defaulted);
+    }
+
+    // ── withdraw_vouch tests ──────────────────────────────────────────────────
+
+    /// 2.1 Happy path: stake is returned and vouch record is removed.
+    /// Requirements: 4.1, 4.2, 5.1, 5.2
+    #[test]
+    fn test_withdraw_vouch_happy_path() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token = TokenClient::new(&env, &token_addr);
+
+        let balance_before = token.balance(&voucher); // 10_000_000
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.withdraw_vouch(&voucher, &borrower);
+
+        assert_eq!(token.balance(&voucher), balance_before);
+        assert!(client.get_vouches(&borrower).is_empty());
+    }
+
+    /// 2.4 Panics with "loan already active" when a LoanRecord exists.
+    /// Requirements: 2.1
+    #[test]
+    #[should_panic(expected = "loan already active")]
+    fn test_withdraw_vouch_loan_active_panics() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.withdraw_vouch(&voucher, &borrower);
+    }
+
+    /// 2.5 Panics with "vouch not found" when no matching VouchRecord exists.
+    /// Requirements: 3.1
+    #[test]
+    #[should_panic(expected = "vouch not found")]
+    fn test_withdraw_vouch_not_found_panics() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Never vouched — should panic immediately.
+        client.withdraw_vouch(&voucher, &borrower);
+    }
+
+    /// 2.6 Only the target VouchRecord is removed when multiple vouchers exist.
+    /// Requirements: 5.3
+    #[test]
+    fn test_withdraw_vouch_isolation() {
+        let env = Env::default();
+        let (contract_id, token_addr, admin, borrower, voucher1) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Mint tokens for a second voucher.
+        let voucher2 = Address::generate(&env);
+        let token_admin = StellarAssetClient::new(&env, &token_addr);
+        token_admin.mint(&voucher2, &10_000_000);
+        let _ = admin; // suppress unused warning
+
+        client.vouch(&voucher1, &borrower, &1_000_000);
+        client.vouch(&voucher2, &borrower, &2_000_000);
+
+        client.withdraw_vouch(&voucher1, &borrower);
+
+        let remaining = client.get_vouches(&borrower);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining.get(0).unwrap().voucher, voucher2);
+    }
+
+    /// 2.7 Vouches key is removed from storage when the last vouch is withdrawn.
+    /// Requirements: 5.2
+    #[test]
+    fn test_withdraw_vouch_removes_storage_key() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.withdraw_vouch(&voucher, &borrower);
+
+        // get_vouches returns empty vec when key is absent.
+        assert!(client.get_vouches(&borrower).is_empty());
     }
 }
