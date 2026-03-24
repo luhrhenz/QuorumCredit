@@ -12,6 +12,10 @@ use reputation::ReputationNftContractClient;
 
 const DEFAULT_YIELD_BPS: i128 = 200;
 const DEFAULT_SLASH_BPS: i128 = 5000;
+const _: () = assert!(
+    DEFAULT_SLASH_BPS <= 10_000,
+    "DEFAULT_SLASH_BPS must not exceed 10_000"
+);
 const DEFAULT_MAX_VOUCHERS: u32 = 100;
 const DEFAULT_MIN_LOAN_AMOUNT: i128 = 100_000;
 const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
@@ -27,6 +31,7 @@ pub enum ContractError {
     NoActiveLoan = 3,
     ContractPaused = 4,
     LoanPastDeadline = 5,
+    UnauthorizedCaller = 6,
 }
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
@@ -44,17 +49,19 @@ pub enum LoanStatus {
 
 #[contracttype]
 pub enum DataKey {
-    Loan(Address),           // borrower → LoanRecord
-    Vouches(Address),        // borrower → Vec<VouchRecord>
-    Admin,                   // Address allowed to call slash
-    Token,                   // XLM token contract address
-    Deployer,                // Address that deployed the contract; guards initialize
-    SlashTreasury,           // i128 accumulated slashed funds
-    Paused,                  // bool: true when contract is paused
-    ReputationNft,           // Address of the ReputationNftContract
-    Config,                  // Config struct: all configurable protocol parameters
+    Loan(Address),    // borrower → LoanRecord
+    Vouches(Address), // borrower → Vec<VouchRecord>
+    Admin,            // Address allowed to call slash
+    Token,            // XLM token contract address
+    Deployer,         // Address that deployed the contract; guards initialize
+    SlashTreasury,    // i128 accumulated slashed funds
+    Paused,           // bool: true when contract is paused
+    ReputationNft,    // Address of the ReputationNftContract
+    Config,           // Config struct: all configurable protocol parameters
+    YieldBps,         // i128 yield in basis points
+    SlashBps,         // i128 slash penalty in basis points
+    PendingAdmin,     // Address of the pending admin (two-step transfer)
     RepaymentCount(Address), // borrower → u32 total successful repayments
-    PendingAdmin,            // Address of the pending admin (two-step transfer)
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -137,6 +144,14 @@ impl QuorumCreditContract {
         assert!(
             !env.storage().instance().has(&DataKey::Admin),
             "already initialized"
+        );
+        assert!(
+            DEFAULT_YIELD_BPS > 0 && DEFAULT_YIELD_BPS <= 10_000,
+            "yield_bps must be in range 1..=10000"
+        );
+        assert!(
+            DEFAULT_SLASH_BPS > 0 && DEFAULT_SLASH_BPS <= 10_000,
+            "slash_bps must be in range 1..=10000"
         );
 
         env.storage().instance().set(&DataKey::Deployer, &deployer);
@@ -323,6 +338,9 @@ impl QuorumCreditContract {
             .get(&DataKey::Loan(borrower.clone()))
             .ok_or(ContractError::NoActiveLoan)?;
 
+        if borrower != loan.borrower {
+            return Err(ContractError::UnauthorizedCaller);
+        }
         assert!(!loan.defaulted, "loan already defaulted");
         assert!(!loan.repaid, "loan already repaid");
 
@@ -1032,6 +1050,38 @@ mod tests {
         client.repay(&borrower);
 
         assert_eq!(token.balance(&voucher), 10_020_000);
+    }
+
+    #[test]
+    fn test_repay_mismatched_borrower_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let voucher = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_admin = StellarAssetClient::new(&env, &token_id.address());
+        token_admin.mint(&voucher, &10_000_000);
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        token_admin.mint(&contract_id, &50_000_000);
+        token_admin.mint(&attacker, &10_000_000);
+
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &admin, &token_id.address());
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        // attacker tries to repay borrower's loan — must be rejected
+        // because attacker != loan.borrower
+        let result = client.try_repay(&attacker);
+        assert_eq!(result, Err(Ok(ContractError::NoActiveLoan)));
+
+        // also verify borrower can still repay their own loan
+        client.repay(&borrower);
     }
 
     #[test]
@@ -1803,5 +1853,30 @@ mod tests {
         client.request_loan(&borrower2, &500_000, &1_000_000);
         client.slash(&borrower2);
         assert_eq!(client.repayment_count(&borrower2), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "slash_bps must be 1-10000")]
+    fn test_set_config_slash_bps_above_10000_rejected() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut cfg = client.get_config();
+        cfg.slash_bps = 10_001;
+        client.set_config(&cfg);
+    }
+
+    #[test]
+    fn test_set_config_slash_bps_at_boundary_10000_accepted() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, _borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let mut cfg = client.get_config();
+        cfg.slash_bps = 10_000;
+        client.set_config(&cfg);
+
+        assert_eq!(client.get_config().slash_bps, 10_000);
     }
 }
