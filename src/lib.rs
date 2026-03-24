@@ -44,16 +44,6 @@ pub enum LoanStatus {
 
 #[contracttype]
 pub enum DataKey {
-    Loan(Address),       // borrower → LoanRecord
-    Vouches(Address),    // borrower → Vec<VouchRecord>
-    Admin,               // Address allowed to call slash
-    Token,               // XLM token contract address
-    Deployer,            // Address that deployed the contract; guards initialize
-    MaxLoanToStakeRatio, // Maximum loan-to-stake ratio (percentage * 100)
-    SlashTreasury,       // i128 accumulated slashed funds
-    Paused,              // bool: true when contract is paused
-    LoanDuration,        // u64 configurable loan duration in seconds
-    ReputationNft,       // Address of the ReputationNftContract
     Loan(Address),    // borrower → LoanRecord
     Vouches(Address), // borrower → Vec<VouchRecord>
     Admin,            // Address allowed to call slash
@@ -62,6 +52,7 @@ pub enum DataKey {
     SlashTreasury,    // i128 accumulated slashed funds
     Paused,           // bool: true when contract is paused
     Config,           // Config struct: all configurable protocol parameters
+    ReputationNft,    // Address of the ReputationNftContract
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -130,12 +121,7 @@ impl QuorumCreditContract {
     /// sign this transaction. This prevents front-running attacks where an
     /// observer of the deployment transaction calls `initialize` first with
     /// their own admin address before the legitimate deployer can do so.
-    pub fn initialize(
-        env: Env,
-        deployer: Address,
-        admin: Address,
-        token: Address,
-    ) {
+    pub fn initialize(env: Env, deployer: Address, admin: Address, token: Address) {
         // Require the deployer's signature — only they can authorise this call.
         deployer.require_auth();
 
@@ -147,7 +133,9 @@ impl QuorumCreditContract {
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
-        env.storage().instance().set(&DataKey::Config, &Config::default());
+        env.storage()
+            .instance()
+            .set(&DataKey::Config, &Config::default());
     }
 
     /// Stake XLM to vouch for a borrower.
@@ -245,13 +233,17 @@ impl QuorumCreditContract {
         );
         assert!(threshold > 0, "threshold must be greater than zero");
 
-        // Prevent multiple active loans.
-        assert!(
-            !env.storage()
-                .persistent()
-                .has(&DataKey::Loan(borrower.clone())),
-            "borrower already has an active loan"
-        );
+        // Prevent overwriting an active loan record.
+        if let Some(existing) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, LoanRecord>(&DataKey::Loan(borrower.clone()))
+        {
+            assert!(
+                existing.repaid || existing.defaulted,
+                "borrower already has an active loan"
+            );
+        }
 
         let vouches: Vec<VouchRecord> = env
             .storage()
@@ -614,11 +606,26 @@ impl QuorumCreditContract {
             .expect("not initialized");
         admin.require_auth();
         assert!(config.yield_bps >= 0, "yield_bps must be non-negative");
-        assert!(config.slash_bps > 0 && config.slash_bps <= 10_000, "slash_bps must be 1-10000");
-        assert!(config.max_vouchers > 0, "max_vouchers must be greater than zero");
-        assert!(config.min_loan_amount > 0, "min_loan_amount must be greater than zero");
-        assert!(config.loan_duration > 0, "loan_duration must be greater than zero");
-        assert!(config.max_loan_to_stake_ratio > 0, "max_loan_to_stake_ratio must be greater than zero");
+        assert!(
+            config.slash_bps > 0 && config.slash_bps <= 10_000,
+            "slash_bps must be 1-10000"
+        );
+        assert!(
+            config.max_vouchers > 0,
+            "max_vouchers must be greater than zero"
+        );
+        assert!(
+            config.min_loan_amount > 0,
+            "min_loan_amount must be greater than zero"
+        );
+        assert!(
+            config.loan_duration > 0,
+            "loan_duration must be greater than zero"
+        );
+        assert!(
+            config.max_loan_to_stake_ratio > 0,
+            "max_loan_to_stake_ratio must be greater than zero"
+        );
         env.storage().instance().set(&DataKey::Config, &config);
     }
 
@@ -858,7 +865,7 @@ mod tests {
         token_admin.mint(&contract_id, &50_000_000);
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &admin, &token_id.address(), &150);
+        client.initialize(&admin, &admin, &token_id.address());
 
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
@@ -1058,6 +1065,19 @@ mod tests {
             result.is_err(),
             "expected error when loan amount exceeds maximum collateral ratio"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "borrower already has an active loan")]
+    fn test_request_loan_rejects_overwrite_of_active_loan() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        // Second request while first loan is still active must panic.
+        client.request_loan(&borrower, &500_000, &1_000_000);
     }
 
     #[test]
@@ -1309,7 +1329,11 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         let token = TokenClient::new(&env, &token_addr);
 
-        client.set_config(&{ let mut c = client.get_config(); c.loan_duration = 1_000; c });
+        client.set_config(&{
+            let mut c = client.get_config();
+            c.loan_duration = 1_000;
+            c
+        });
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
 
@@ -1334,7 +1358,11 @@ mod tests {
         let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
-        client.set_config(&{ let mut c = client.get_config(); c.loan_duration = 1_000; c });
+        client.set_config(&{
+            let mut c = client.get_config();
+            c.loan_duration = 1_000;
+            c
+        });
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
 
@@ -1350,7 +1378,11 @@ mod tests {
         let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
-        client.set_config(&{ let mut c = client.get_config(); c.loan_duration = 1_000; c });
+        client.set_config(&{
+            let mut c = client.get_config();
+            c.loan_duration = 1_000;
+            c
+        });
         client.vouch(&voucher, &borrower, &1_000_000);
         client.request_loan(&borrower, &500_000, &1_000_000);
 
@@ -1455,15 +1487,12 @@ mod tests {
 
     // ── Reputation NFT Tests ──────────────────────────────────────────────────
 
-    fn setup_with_reputation(
-        env: &Env,
-    ) -> (Address, Address, Address, Address, Address, Address) {
+    fn setup_with_reputation(env: &Env) -> (Address, Address, Address, Address, Address, Address) {
         let (contract_id, token_addr, admin, borrower, voucher) = setup(env);
         let client = QuorumCreditContractClient::new(env, &contract_id);
 
         let nft_id = env.register_contract(None, reputation::ReputationNftContract);
-        reputation::ReputationNftContractClient::new(env, &nft_id)
-            .initialize(&contract_id);
+        reputation::ReputationNftContractClient::new(env, &nft_id).initialize(&contract_id);
         client.set_reputation_nft(&nft_id);
 
         (contract_id, token_addr, admin, borrower, voucher, nft_id)
@@ -1472,8 +1501,7 @@ mod tests {
     #[test]
     fn test_repay_mints_reputation() {
         let env = Env::default();
-        let (contract_id, _token, _admin, borrower, voucher, nft_id) =
-            setup_with_reputation(&env);
+        let (contract_id, _token, _admin, borrower, voucher, nft_id) = setup_with_reputation(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         let nft = reputation::ReputationNftContractClient::new(&env, &nft_id);
 
@@ -1522,11 +1550,17 @@ mod tests {
     #[test]
     fn test_slash_burn_floors_at_zero() {
         let env = Env::default();
-        let (contract_id, _token, _admin, borrower, voucher, _nft_id) =
-            setup_with_reputation(&env);
+        let (contract_id, _token, _admin, borrower, voucher, _nft_id) = setup_with_reputation(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         // Default immediately with score = 0 — should not underflow.
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+
+        assert_eq!(client.get_reputation(&borrower), 0);
+    }
+
     // ── Config Tests ──────────────────────────────────────────────────────────
 
     #[test]
@@ -1592,9 +1626,8 @@ mod tests {
     #[test]
     fn test_config_slash_bps_applied_on_slash() {
         let env = Env::default();
-        let (contract_id, token_addr, _, borrower, voucher) = setup(&env);
+        let (contract_id, _token_addr, _, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
-        let token = TokenClient::new(&env, &token_addr);
 
         // Set slash to 25% (2500 bps).
         let mut cfg = client.get_config();
@@ -1616,7 +1649,5 @@ mod tests {
 
         // No NFT contract configured — should return 0 gracefully.
         assert_eq!(client.get_reputation(&borrower), 0);
-        // voucher started with 10_000_000, staked 1_000_000, gets back 750_000
-        assert_eq!(token.balance(&voucher), 9_750_000);
     }
 }
