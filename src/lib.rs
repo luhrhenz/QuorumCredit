@@ -2,6 +2,9 @@
 
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env, Vec};
 
+pub mod reputation;
+use reputation::ReputationNftContractClient;
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 /// Yield paid to vouchers on repayment: 200 basis points = 2%.
@@ -51,6 +54,7 @@ pub enum DataKey {
     SlashTreasury,       // i128 accumulated slashed funds
     Paused,              // bool: true when contract is paused
     LoanDuration,        // u64 configurable loan duration in seconds
+    ReputationNft,       // Address of the ReputationNftContract
 }
 
 // ── Data Types ────────────────────────────────────────────────────────────────
@@ -325,7 +329,16 @@ impl QuorumCreditContract {
         loan.repaid = true;
         env.storage()
             .persistent()
-            .set(&DataKey::Loan(borrower), &loan);
+            .set(&DataKey::Loan(borrower.clone()), &loan);
+
+        // Mint one reputation point if a reputation NFT contract is configured.
+        if let Some(nft_addr) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ReputationNft)
+        {
+            ReputationNftContractClient::new(&env, &nft_addr).mint(&borrower);
+        }
 
         Ok(())
     }
@@ -378,6 +391,15 @@ impl QuorumCreditContract {
         env.storage()
             .persistent()
             .set(&DataKey::Loan(borrower.clone()), &loan);
+
+        // Burn one reputation point if a reputation NFT contract is configured.
+        if let Some(nft_addr) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ReputationNft)
+        {
+            ReputationNftContractClient::new(&env, &nft_addr).burn(&borrower);
+        }
 
         // Clear vouches after slashing to prevent state pollution.
         env.storage()
@@ -536,6 +558,15 @@ impl QuorumCreditContract {
             .persistent()
             .set(&DataKey::Loan(borrower.clone()), &loan);
 
+        // Burn one reputation point if a reputation NFT contract is configured.
+        if let Some(nft_addr) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ReputationNft)
+        {
+            ReputationNftContractClient::new(&env, &nft_addr).burn(&borrower);
+        }
+
         env.storage()
             .persistent()
             .remove(&DataKey::Vouches(borrower));
@@ -647,6 +678,32 @@ impl QuorumCreditContract {
         env.storage().persistent().get(&DataKey::Vouches(borrower))
     }
 
+    /// Admin sets the reputation NFT contract address.
+    pub fn set_reputation_nft(env: Env, nft_contract: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("not initialized");
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::ReputationNft, &nft_contract);
+    }
+
+    /// Returns the reputation score for a borrower (0 if no NFT contract set or no history).
+    pub fn get_reputation(env: Env, borrower: Address) -> u32 {
+        let nft_addr: Address = match env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::ReputationNft)
+        {
+            Some(a) => a,
+            None => return 0,
+        };
+        ReputationNftContractClient::new(&env, &nft_addr).balance(&borrower)
+    }
+
     /// Returns the total staked amount across all vouchers for a given borrower.
     /// Returns 0 if the borrower has no vouches.
     pub fn total_vouched(env: Env, borrower: Address) -> i128 {
@@ -718,8 +775,6 @@ mod tests {
             &token_id.address(),
             &150,
         );
-        QuorumCreditContractClient::new(env, &contract_id)
-            .initialize(&admin, &admin, &token_id.address(), &150);
 
         (contract_id, token_id.address(), admin, borrower, voucher)
     }
@@ -816,8 +871,6 @@ mod tests {
             &token_id.address(),
             &150,
         );
-        QuorumCreditContractClient::new(&env, &contract_id)
-            .initialize(&admin, &admin, &token_id.address(), &150);
 
         let client = QuorumCreditContractClient::new(&env, &contract_id);
         // Stake 1_000_000 — contract now holds exactly 1_000_000.
@@ -1310,5 +1363,96 @@ mod tests {
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
         assert_eq!(client.get_token(), token_addr);
+    }
+
+    // ── Reputation NFT Tests ──────────────────────────────────────────────────
+
+    fn setup_with_reputation(
+        env: &Env,
+    ) -> (Address, Address, Address, Address, Address, Address) {
+        let (contract_id, token_addr, admin, borrower, voucher) = setup(env);
+        let client = QuorumCreditContractClient::new(env, &contract_id);
+
+        let nft_id = env.register_contract(None, reputation::ReputationNftContract);
+        reputation::ReputationNftContractClient::new(env, &nft_id)
+            .initialize(&contract_id);
+        client.set_reputation_nft(&nft_id);
+
+        (contract_id, token_addr, admin, borrower, voucher, nft_id)
+    }
+
+    #[test]
+    fn test_repay_mints_reputation() {
+        let env = Env::default();
+        let (contract_id, _token, _admin, borrower, voucher, nft_id) =
+            setup_with_reputation(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let nft = reputation::ReputationNftContractClient::new(&env, &nft_id);
+
+        assert_eq!(client.get_reputation(&borrower), 0);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.repay(&borrower);
+
+        assert_eq!(client.get_reputation(&borrower), 1);
+        assert_eq!(nft.balance(&borrower), 1);
+    }
+
+    #[test]
+    fn test_slash_burns_reputation() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher, nft_id) =
+            setup_with_reputation(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let nft = reputation::ReputationNftContractClient::new(&env, &nft_id);
+        let token_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token_addr);
+
+        // Build up score of 1 via a repaid loan on borrower.
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.repay(&borrower);
+        assert_eq!(nft.balance(&borrower), 1);
+
+        // Use a fresh borrower + voucher for the default scenario.
+        let borrower2 = soroban_sdk::Address::generate(&env);
+        let voucher2 = soroban_sdk::Address::generate(&env);
+        token_admin.mint(&voucher2, &2_000_000);
+
+        // Manually mint 1 point to borrower2 so burn has something to decrement.
+        nft.mint(&borrower2);
+        assert_eq!(nft.balance(&borrower2), 1);
+
+        client.vouch(&voucher2, &borrower2, &1_000_000);
+        client.request_loan(&borrower2, &500_000, &1_000_000);
+        client.slash(&borrower2);
+
+        assert_eq!(client.get_reputation(&borrower2), 0);
+        assert_eq!(nft.balance(&borrower2), 0);
+    }
+
+    #[test]
+    fn test_slash_burn_floors_at_zero() {
+        let env = Env::default();
+        let (contract_id, _token, _admin, borrower, voucher, _nft_id) =
+            setup_with_reputation(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Default immediately with score = 0 — should not underflow.
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        client.slash(&borrower);
+
+        assert_eq!(client.get_reputation(&borrower), 0);
+    }
+
+    #[test]
+    fn test_get_reputation_without_nft_returns_zero() {
+        let env = Env::default();
+        let (contract_id, _token, _admin, borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // No NFT contract configured — should return 0 gracefully.
+        assert_eq!(client.get_reputation(&borrower), 0);
     }
 }

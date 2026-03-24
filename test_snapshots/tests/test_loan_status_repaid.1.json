@@ -168,7 +168,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 1500000
+                    "lo": 500000
                   }
                 },
                 {
@@ -215,7 +215,7 @@
                     {
                       "i128": {
                         "hi": 0,
-                        "lo": 1500000
+                        "lo": 500000
                       }
                     }
                   ]
@@ -542,7 +542,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1500000
+                          "lo": 500000
                         }
                       }
                     },
@@ -1636,7 +1636,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 1500000
+                    "lo": 500000
                   }
                 },
                 {
@@ -1733,7 +1733,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 1500000
+                    "lo": 500000
                   }
                 }
               ]
@@ -1767,7 +1767,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 1500000
+                "lo": 500000
               }
             }
           }
@@ -1872,7 +1872,7 @@
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 1500000
+                    "lo": 500000
                   }
                 }
               ]
@@ -1906,7 +1906,7 @@
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 1500000
+                "lo": 500000
               }
             }
           }
@@ -2115,27 +2115,11 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000005"
               },
               {
-                "symbol": "request_loan"
+                "symbol": "loan_status"
               }
             ],
             "data": {
-              "vec": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 2000000
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 1000000
-                  }
-                }
-              ]
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
             }
           }
         }
@@ -2151,104 +2135,16 @@
           "v0": {
             "topics": [
               {
-                "symbol": "log"
+                "symbol": "fn_return"
+              },
+              {
+                "symbol": "loan_status"
               }
             ],
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'borrower already has an active loan' from contract function 'Symbol(obj#683)'"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 2000000
-                  }
-                },
-                {
-                  "i128": {
-                    "hi": 0,
-                    "lo": 1000000
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": true
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000005",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "error"
-              },
-              {
-                "error": {
-                  "wasm_vm": "invalid_action"
-                }
-              }
-            ],
-            "data": {
-              "string": "caught error from function"
-            }
-          }
-        }
-      },
-      "failed_call": true
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "error"
-              },
-              {
-                "error": {
-                  "wasm_vm": "invalid_action"
-                }
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "string": "contract try_call failed"
-                },
-                {
-                  "symbol": "request_loan"
-                },
-                {
-                  "vec": [
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                    },
-                    {
-                      "i128": {
-                        "hi": 0,
-                        "lo": 2000000
-                      }
-                    },
-                    {
-                      "i128": {
-                        "hi": 0,
-                        "lo": 1000000
-                      }
-                    }
-                  ]
+                  "symbol": "Repaid"
                 }
               ]
             }
