@@ -820,6 +820,9 @@ impl QuorumCreditContract {
         env.storage().persistent().get(&DataKey::Vouches(borrower))
     }
 
+    /// Returns the contract's current XLM balance in stroops.
+    pub fn get_contract_balance(env: Env) -> i128 {
+        Self::token(&env).balance(&env.current_contract_address())
     /// Returns all borrower addresses that the given voucher has ever backed.
     /// Returns an empty Vec if the voucher has no history.
     pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
@@ -1589,6 +1592,22 @@ mod tests {
         assert_eq!(client.get_admin(), admin);
     }
 
+    #[test]
+    fn test_get_contract_balance() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // setup() mints 50_000_000 stroops into the contract.
+        assert_eq!(client.get_contract_balance(), 50_000_000);
+
+        // After a vouch the contract holds stake on top of its initial balance.
+        client.vouch(&voucher, &borrower, &1_000_000);
+        assert_eq!(client.get_contract_balance(), 51_000_000);
+
+        // After disbursing a loan the balance decreases by the loan amount.
+        client.request_loan(&borrower, &500_000, &1_000_000);
+        assert_eq!(client.get_contract_balance(), 50_500_000);
     // ── Voucher History Tests ─────────────────────────────────────────────────
 
     #[test]
