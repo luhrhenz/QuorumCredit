@@ -856,6 +856,42 @@ impl QuorumCreditContract {
         env.storage().persistent().get(&DataKey::Vouches(borrower))
     }
 
+    /// Read-only eligibility check for frontends — no transaction required.
+    ///
+    /// Returns `true` when ALL of the following hold:
+    ///   1. `threshold` is greater than zero.
+    ///   2. The borrower has no active (non-repaid, non-defaulted) loan.
+    ///   3. The sum of all vouched stakes for `borrower` is >= `threshold`.
+    ///
+    /// This mirrors the eligibility gates inside `request_loan` without
+    /// touching any state or requiring auth, so it is safe to call from
+    /// any frontend simulation context.
+    pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
+        // Guard: threshold must be positive (mirrors request_loan assertion).
+        if threshold <= 0 {
+            return false;
+        }
+
+        // Guard: borrower must not already hold an active loan.
+        if let Some(loan) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, LoanRecord>(&DataKey::Loan(borrower.clone()))
+        {
+            if !loan.repaid && !loan.defaulted {
+                return false;
+            }
+        }
+
+        // Sum all vouched stakes and compare against the threshold.
+        let vouches: Vec<VouchRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Vouches(borrower))
+            .unwrap_or(Vec::new(&env));
+
+        let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+        total_stake >= threshold
     /// Returns the contract's current XLM balance in stroops.
     pub fn get_contract_balance(env: Env) -> i128 {
         Self::token(&env).balance(&env.current_contract_address())
@@ -1635,6 +1671,32 @@ mod tests {
         assert_eq!(client.get_admin(), admin);
     }
 
+    // ── is_eligible Tests ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_eligible_returns_true_when_stake_meets_threshold() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+
+        assert!(client.is_eligible(&borrower, &1_000_000));
+    }
+
+    #[test]
+    fn test_is_eligible_returns_false_when_stake_below_threshold() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &500_000);
+
+        assert!(!client.is_eligible(&borrower, &1_000_000));
+    }
+
+    #[test]
+    fn test_is_eligible_returns_false_for_zero_threshold() {
     // ── Min Stake Tests ───────────────────────────────────────────────────────
 
     #[test]
@@ -1699,6 +1761,29 @@ mod tests {
         let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
         let client = QuorumCreditContractClient::new(&env, &contract_id);
 
+        client.vouch(&voucher, &borrower, &1_000_000);
+
+        assert!(!client.is_eligible(&borrower, &0));
+    }
+
+    #[test]
+    fn test_is_eligible_returns_false_when_loan_already_active() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        client.request_loan(&borrower, &500_000, &1_000_000);
+
+        // Stake still meets threshold but borrower already has an active loan.
+        assert!(!client.is_eligible(&borrower, &1_000_000));
+    }
+
+    #[test]
+    fn test_is_eligible_returns_true_after_loan_repaid() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
         // setup() mints 50_000_000 stroops into the contract.
         assert_eq!(client.get_contract_balance(), 50_000_000);
 
@@ -1840,6 +1925,39 @@ mod tests {
         client.request_loan(&borrower, &500_000, &1_000_000);
         client.repay(&borrower);
 
+        // Loan is repaid — borrower is eligible for a new one if vouches are still present.
+        // After repay, vouches are NOT cleared, so stake is still counted.
+        assert!(client.is_eligible(&borrower, &1_000_000));
+    }
+
+    #[test]
+    fn test_is_eligible_returns_false_with_no_vouches() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, _voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        assert!(!client.is_eligible(&borrower, &1_000_000));
+    }
+
+    #[test]
+    fn test_is_eligible_aggregates_multiple_vouchers() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token_admin = StellarAssetClient::new(&env, &token_addr);
+
+        let voucher2 = Address::generate(&env);
+        token_admin.mint(&voucher2, &10_000_000);
+
+        // Each voucher stakes 600_000; combined = 1_200_000 which meets 1_000_000 threshold.
+        client.vouch(&voucher, &borrower, &600_000);
+        client.vouch(&voucher2, &borrower, &600_000);
+
+        assert!(client.is_eligible(&borrower, &1_000_000));
+        // But neither alone would meet a 700_000 threshold — combined they do.
+        assert!(client.is_eligible(&borrower, &1_200_000));
+        assert!(!client.is_eligible(&borrower, &1_200_001));
         assert_eq!(client.get_reputation(&borrower), 1);
         assert_eq!(nft.balance(&borrower), 1);
     }
