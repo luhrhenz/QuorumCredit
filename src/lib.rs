@@ -49,9 +49,7 @@ pub enum ContractError {
     LoanExceedsMaxAmount = 11,
     InsufficientVouchers = 12,
     UnauthorizedCaller = 13,
-    VoucherNotFound = 16,
-    NoVouchesForBorrower = 15,
-    VouchCooldownActive = 14,
+    BorrowerHasActiveLoan = 14,
 }
 
 // ── Loan Status ───────────────────────────────────────────────────────────────
@@ -281,6 +279,12 @@ impl QuorumCreditContract {
             if v.voucher == voucher {
                 return Err(ContractError::DuplicateVouch);
             }
+        }
+
+        // Reject vouch if the borrower already has an active loan — the stake
+        // would be locked with no effect on the existing loan (fixes issue #13).
+        if Self::has_active_loan(&env, &borrower) {
+            return Err(ContractError::BorrowerHasActiveLoan);
         }
 
         assert!(
