@@ -29,6 +29,7 @@ const DEFAULT_MAX_VOUCHERS: u32 = 100;
 const DEFAULT_MIN_LOAN_AMOUNT: i128 = 100_000;
 const DEFAULT_LOAN_DURATION: u64 = 30 * 24 * 60 * 60;
 const DEFAULT_MAX_LOAN_TO_STAKE_RATIO: u32 = 150;
+const DEFAULT_SLASH_CHALLENGE_WINDOW: u64 = 7 * 24 * 60 * 60;
 const DEFAULT_VOUCH_COOLDOWN_SECS: u64 = 24 * 60 * 60; // 24 hours
 /// Delay before a timelocked action can be executed (24 hours).
 const TIMELOCK_DELAY: u64 = 24 * 60 * 60;
@@ -131,6 +132,27 @@ pub struct Config {
     pub loan_duration: u64,
     /// Maximum loan amount as a percentage of total stake (default 150 = 150%).
     pub max_loan_to_stake_ratio: u32,
+    /// Minimum stake in stroops required for a vouch to earn non-zero yield.
+    /// Vouches below this threshold are rejected to prevent silent yield truncation.
+    /// At the default 200 bps yield rate, the minimum is 50 stroops
+    /// (50 * 200 / 10_000 = 1 stroop of yield).
+    pub min_yield_stake: i128,
+    pub slash_challenge_window: u64,
+}
+
+impl Config {
+    fn default() -> Self {
+        Config {
+            yield_bps: DEFAULT_YIELD_BPS,
+            slash_bps: DEFAULT_SLASH_BPS,
+            max_vouchers: DEFAULT_MAX_VOUCHERS,
+            min_loan_amount: DEFAULT_MIN_LOAN_AMOUNT,
+            loan_duration: DEFAULT_LOAN_DURATION,
+            max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
+            min_yield_stake: DEFAULT_MIN_YIELD_STAKE,
+            slash_challenge_window: DEFAULT_SLASH_CHALLENGE_WINDOW,
+        }
+    }
     /// Grace period after deadline before auto_slash is allowed, in seconds (default 3 days).
     /// A value of 0 means slashing is allowed immediately after the deadline.
     pub grace_period: u64,
@@ -172,6 +194,23 @@ pub struct LoanPoolRecord {
     pub total_disbursed: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChallengeStatus {
+    Pending,       
+    Challenged,
+    Resolved,
+    Finalized,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct SlashChallengeRecord {
+    pub borrower: Address,
+    pub initiated_at: u64,
+    pub challenge_deadline: u64,
+    pub status: ChallengeStatus,
+    pub reason: soroban_sdk::Symbol,
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Returns true if the address is the all-zeros account or contract address.
@@ -1502,6 +1541,8 @@ impl QuorumCreditContract {
             config.max_loan_to_stake_ratio > 0,
             "max_loan_to_stake_ratio must be greater than zero"
         );
+        assert!(config.slash_challenge_window > 0, "challenge window must be positive");
+        Self::validate_admin_config(&config.admins, config.admin_threshold);
         // grace_period of 0 is valid — means no grace period, slash allowed immediately after deadline.
         env.storage().instance().set(&DataKey::Config, &config);
         env.events().publish(
