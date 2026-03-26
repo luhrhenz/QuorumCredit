@@ -241,9 +241,9 @@ impl QuorumCreditContract {
         env.storage().instance().set(
             &DataKey::Config,
             &Config {
-                admins,
+                admins: admins.clone(),
                 admin_threshold,
-                token,
+                token: token.clone(),
                 yield_bps: DEFAULT_YIELD_BPS,
                 slash_bps: DEFAULT_SLASH_BPS,
                 max_vouchers: DEFAULT_MAX_VOUCHERS,
@@ -252,6 +252,11 @@ impl QuorumCreditContract {
                 max_loan_to_stake_ratio: DEFAULT_MAX_LOAN_TO_STAKE_RATIO,
                 min_yield_stake: DEFAULT_MIN_YIELD_STAKE,
             },
+        );
+
+        env.events().publish(
+            (symbol_short!("contract"), symbol_short!("init")),
+            (deployer.clone(), admins, admin_threshold, token),
         );
     }
 
@@ -2400,6 +2405,45 @@ mod tests {
         assert!(!loan.defaulted);
         assert!(loan.created_at > 0);
         assert!(loan.deadline > loan.created_at);
+    }
+
+    #[test]
+    fn test_initialize_emits_event() {
+        use soroban_sdk::{IntoVal, Val};
+        
+        let env = Env::default();
+        env.mock_all_auths();
+        
+        let admin = Address::generate(&env);
+        let admins = single_admin_signers(&env, &admin);
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        
+        client.initialize(
+            &admin,
+            &admins,
+            &1,
+            &token_id.address(),
+        );
+        
+        let events = env.events().all();
+        let last_event = events.last().unwrap();
+        
+        assert_eq!(
+            last_event.topics,
+            (
+                contract_id.clone(),
+                symbol_short!("contract").into_val(&env),
+                symbol_short!("init").into_val(&env),
+            )
+        );
+        
+        let event_data: (Address, soroban_sdk::Vec<Address>, u32, Address) = last_event.data.into_val(&env);
+        assert_eq!(event_data.0, admin);
+        assert_eq!(event_data.1, admins);
+        assert_eq!(event_data.2, 1);
+        assert_eq!(event_data.3, token_id.address());
     }
 
     #[test]
