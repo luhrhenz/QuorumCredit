@@ -67,3 +67,48 @@ cargo fmt --all
 ---
 
 *Happy Coding! 🚀*
+
+## 🔐 Admin Key Management (Multisig Security)
+
+QuorumCredit uses an M-of-N multisig model for all privileged operations (slash, config, treasury, pause, upgrade). A single compromised key cannot unilaterally act.
+
+### How it works
+
+- `admins: Vec<Address>` — the registered admin set (N keys)
+- `admin_threshold: u32` — minimum signatures required (M)
+- Every admin function takes `admin_signers: Vec<Address>` and calls `require_admin_approval`, which verifies:
+  1. `admin_signers.len() >= admin_threshold`
+  2. Every signer is in the registered `admins` set
+  3. Every signer has authorised the transaction (`require_auth`)
+
+### Recommended configuration
+
+| Deployment | Recommended setup |
+|---|---|
+| Testnet / staging | 1-of-1 (single key, for speed) |
+| Mainnet small team | 2-of-3 |
+| Mainnet production | 3-of-5 |
+
+A good rule of thumb: `threshold = floor(N/2) + 1` (simple majority).
+
+### Key management best practices
+
+1. **Use hardware wallets** (Ledger, Trezor) for every admin key — never hot wallets.
+2. **Geographic separation** — store key backups in physically separate, offline locations.
+3. **No key sharing** — each admin controls exactly one key; never share private keys.
+4. **Rotate keys periodically** using `rotate_admin`. Rotation requires the current quorum to sign, so a single compromised key cannot rotate itself in.
+5. **Verify after rotation** — always call `get_admins()` after any key management operation to confirm the expected set.
+6. **Never reuse compromised keys** — if a key is suspected compromised, rotate it out immediately using the remaining quorum.
+7. **Keep threshold satisfiable** — `remove_admin` is blocked if it would make the threshold unreachable; plan key ceremonies before removing admins.
+
+### Admin management functions
+
+| Function | Description |
+|---|---|
+| `add_admin(signers, new_admin)` | Add a new admin; threshold unchanged |
+| `remove_admin(signers, admin)` | Remove an admin; blocked if threshold would become unsatisfiable |
+| `rotate_admin(signers, old, new)` | Atomically swap one key for another; count and threshold preserved |
+| `set_admin_threshold(signers, n)` | Update the quorum threshold |
+| `set_config(signers, config)` | Full config update including admins and threshold |
+
+All of the above require the current quorum to sign.
