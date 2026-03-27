@@ -2894,6 +2894,139 @@ mod tests {
         assert_eq!(client.get_contract_balance(), 50_500_000);
     }
 
+    /// Issue #140 — Verify contract XLM balance at each step of a full
+    /// vouch → loan → repay cycle.
+    ///
+    /// Accounting (all values in stroops):
+    ///   setup pre-funds contract with 50_000_000
+    ///   vouch(1_000_000)      → contract += 1_000_000  = 51_000_000
+    ///   request_loan(500_000) → contract -= 500_000    = 50_500_000
+    ///   repay(500_000)        → contract += 500_000 (repayment)
+    ///                                    -= 1_020_000 (stake + 2% yield)
+    ///                                                 = 49_980_000
+    #[test]
+    fn test_contract_balance_after_full_repayment_cycle() {
+        let env = Env::default();
+        let (contract_id, _token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        // Initial state: contract pre-funded by setup
+        assert_eq!(client.get_contract_balance(), 50_000_000);
+
+        // Step 1: vouch — stake transferred into contract
+        client.vouch(&voucher, &borrower, &1_000_000);
+        assert_eq!(client.get_contract_balance(), 51_000_000);
+
+        // Step 2: request_loan — loan amount disbursed to borrower
+        advance_past_vouch_age(&env);
+        client.request_loan(&borrower, &Vec::new(&env), &500_000, &1_000_000);
+        assert_eq!(client.get_contract_balance(), 50_500_000);
+
+        // Step 3: repay — borrower repays; voucher receives stake + 2% yield
+        // yield = 1_000_000 * 200 / 10_000 = 20_000
+        // payout to voucher = 1_020_000
+        // net contract change = +500_000 (repayment) - 1_020_000 (payout) = -520_000
+        client.repay(&borrower, &500_000);
+        assert_eq!(client.get_contract_balance(), 49_980_000);
+    }
+
+    /// Issue #143 — request_loan fails gracefully when the contract has no XLM.
+    ///
+    /// The contract checks its own balance before disbursing and returns
+    /// `InsufficientFunds` rather than panicking or leaving state inconsistent.
+    #[test]
+    fn test_request_loan_fails_when_contract_has_zero_balance() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_timestamp(1_000_000);
+
+        let admin = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let voucher = Address::generate(&env);
+        let admins = single_admin_signers(&env, &admin);
+
+        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
+        let token_admin = StellarAssetClient::new(&env, &token_id.address());
+        // Mint to voucher only — contract intentionally left with zero balance
+        token_admin.mint(&voucher, &10_000_000);
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &admins, &1, &token_id.address());
+        client.whitelist_voucher(&admins, &voucher);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        advance_past_vouch_age(&env);
+
+        let result = client.try_request_loan(&borrower, &Vec::new(&env), &500_000, &1_000_000);
+        assert_eq!(result, Err(Ok(ContractError::InsufficientFunds)));
+    }
+
+
+    ///
+    /// Decision: the contract rejects the vouch with `ActiveLoanExists`.
+    /// Vouching after disbursement would allow post-hoc trust inflation and
+    /// is not permitted; the trust circle must be established before the loan.
+    #[test]
+    fn test_vouch_rejected_when_loan_already_active() {
+        let env = Env::default();
+        let (contract_id, token_addr, _admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let token_admin = StellarAssetClient::new(&env, &token_addr);
+
+        client.vouch(&voucher, &borrower, &1_000_000);
+        advance_past_vouch_age(&env);
+        client.request_loan(&borrower, &Vec::new(&env), &500_000, &1_000_000);
+
+        // A second voucher attempts to vouch after the loan is active
+        let late_voucher = Address::generate(&env);
+        token_admin.mint(&late_voucher, &1_000_000);
+        client.whitelist_voucher(&single_admin_signers(&env, &_admin), &late_voucher);
+
+        let result = client.try_vouch(&late_voucher, &borrower, &1_000_000);
+        assert_eq!(result, Err(Ok(ContractError::ActiveLoanExists)));
+    }
+
+
+    /// vouch → loan → slash cycle.
+    ///
+    /// Accounting (all values in stroops):
+    ///   setup pre-funds contract with 50_000_000
+    ///   vouch(1_000_000)      → contract += 1_000_000  = 51_000_000
+    ///   request_loan(500_000) → contract -= 500_000    = 50_500_000
+    ///   slash                 → 50% of stake (500_000) to slash treasury (stays in contract)
+    ///                           50% of stake (500_000) returned to voucher (leaves contract)
+    ///                                                  = 50_000_000
+    ///   slashed funds (500_000) remain inside contract as slash treasury
+    #[test]
+    fn test_contract_balance_after_slash_cycle() {
+        let env = Env::default();
+        let (contract_id, _token_addr, admin, borrower, voucher) = setup(&env);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+        let admin_signers = single_admin_signers(&env, &admin);
+
+        // Initial state
+        assert_eq!(client.get_contract_balance(), 50_000_000);
+
+        // Step 1: vouch — stake transferred into contract
+        client.vouch(&voucher, &borrower, &1_000_000);
+        assert_eq!(client.get_contract_balance(), 51_000_000);
+
+        // Step 2: request_loan — loan disbursed to borrower
+        advance_past_vouch_age(&env);
+        client.request_loan(&borrower, &Vec::new(&env), &500_000, &1_000_000);
+        assert_eq!(client.get_contract_balance(), 50_500_000);
+
+        // Step 3: slash — 50% of stake slashed to treasury, 50% returned to voucher
+        // slash_amount = 1_000_000 * 5_000 / 10_000 = 500_000 (stays in contract)
+        // returned     = 1_000_000 - 500_000 = 500_000 (leaves contract)
+        client.slash(&admin_signers, &borrower);
+        assert_eq!(client.get_contract_balance(), 50_000_000);
+
+        // Slashed funds are held in the slash treasury, still inside the contract
+        assert_eq!(client.get_slash_treasury_balance(), 500_000);
+    }
+
     #[test]
     fn test_vouch_exists() {
         let env = Env::default();
