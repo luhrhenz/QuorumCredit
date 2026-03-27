@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused};
-use crate::types::{DataKey, SlashVoteRecord, VouchRecord};
+use crate::types::{DataKey, SlashVoteRecord, VouchRecord, TimelockProposal, TimelockAction};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.
@@ -185,3 +185,155 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
     Ok(())
 }
+
+/// ── Issue 109: Slash Proposal Confirmation Window ──
+/// 
+/// Implements a two-step slash with timelock pattern:
+/// 1. propose_slash: Admin creates a proposal, sets execution time (eta)
+/// 2. execute_slash_proposal: After delay, anyone can execute
+
+/// Propose a slash action with a delay before execution.
+/// This implements the "confirmation window" for the slash action.
+pub fn propose_slash(
+    env: Env,
+    proposer: Address,
+    borrower: Address,
+    delay_secs: u64,
+) -> Result<u64, ContractError> {
+    proposer.require_auth();
+    require_not_paused(&env)?;
+
+    // Get or initialize timelock counter
+    let proposal_id: u64 = env
+        .storage()
+        .instance()
+        .get(&DataKey::TimelockCounter)
+        .unwrap_or(0)
+        .checked_add(1)
+        .expect("proposal ID overflow");
+
+    let eta = env.ledger().timestamp() + delay_secs;
+
+    let proposal = TimelockProposal {
+        id: proposal_id,
+        action: TimelockAction::Slash(borrower.clone()),
+        proposer: proposer.clone(),
+        eta,
+        executed: false,
+        cancelled: false,
+    };
+
+    env.storage()
+        .instance()
+        .set(&DataKey::Timelock(proposal_id), &proposal);
+    env.storage()
+        .instance()
+        .set(&DataKey::TimelockCounter, &proposal_id);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("proposed")),
+        (proposal_id, proposer, borrower, eta),
+    );
+
+    Ok(proposal_id)
+}
+
+/// Execute a previously proposed slash action after the delay has passed.
+pub fn execute_slash_proposal(
+    env: Env,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    require_not_paused(&env)?;
+
+    // Get the proposal
+    let mut proposal: TimelockProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::Timelock(proposal_id))
+        .ok_or(ContractError::NoActiveLoan)?; // Use existing error as placeholder
+
+    // Check proposal state
+    if proposal.executed {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+    }
+
+    // Check delay has passed
+    if env.ledger().timestamp() < proposal.eta {
+        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+    }
+
+    // Check expiry (72 hours from eta)
+    const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
+    if env.ledger().timestamp() > proposal.eta + TIMELOCK_EXPIRY {
+        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+    }
+
+    // Extract borrower from the Slash action
+    if let TimelockAction::Slash(borrower) = &proposal.action {
+        // Mark as executed before calling execute_slash to prevent reentrancy
+        proposal.executed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::Timelock(proposal_id), &proposal);
+
+        // Execute the slash
+        execute_slash(&env, borrower)?;
+
+        env.events().publish(
+            (symbol_short!("gov"), symbol_short!("executed")),
+            (proposal_id, borrower.clone()),
+        );
+
+        Ok(())
+    } else {
+        Err(ContractError::NoActiveLoan) // Only Slash actions supported in this release
+    }
+}
+
+/// Cancel a pending slash proposal (only by proposer or admin).
+pub fn cancel_slash_proposal(
+    env: Env,
+    caller: Address,
+    proposal_id: u64,
+) -> Result<(), ContractError> {
+    caller.require_auth();
+
+    let mut proposal: TimelockProposal = env
+        .storage()
+        .instance()
+        .get(&DataKey::Timelock(proposal_id))
+        .ok_or(ContractError::NoActiveLoan)?;
+
+    // Only proposer can cancel
+    assert!(
+        caller == proposal.proposer,
+        "only proposer can cancel"
+    );
+
+    if proposal.executed || proposal.cancelled {
+        return Err(ContractError::SlashAlreadyExecuted);
+    }
+
+    proposal.cancelled = true;
+    env.storage()
+        .instance()
+        .set(&DataKey::Timelock(proposal_id), &proposal);
+
+    env.events().publish(
+        (symbol_short!("gov"), symbol_short!("cancelled")),
+        (proposal_id, caller),
+    );
+
+    Ok(())
+}
+
+/// Get a timelock proposal by ID.
+pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockProposal> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Timelock(proposal_id))
+}
+

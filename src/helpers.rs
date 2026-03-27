@@ -57,6 +57,14 @@ pub fn add_slash_balance(env: &Env, amount: i128) {
         .set(&DataKey::SlashTreasury, &(current + amount));
 }
 
+/// Issue 112: Get current slash balance to prevent it from being used for yield payouts.
+pub fn get_slash_balance(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::SlashTreasury)
+        .unwrap_or(0)
+}
+
 pub fn has_active_loan(env: &Env, borrower: &Address) -> bool {
     matches!(get_active_loan_record(env, borrower), Ok(loan) if !loan.repaid && !loan.defaulted)
 }

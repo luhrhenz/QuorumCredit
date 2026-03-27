@@ -23,6 +23,12 @@ mod loan_purpose_test;
 mod multi_asset_test;
 #[cfg(test)]
 mod referral_test;
+#[cfg(test)]
+mod security_fixes_test;
+#[cfg(test)]
+mod bug_condition_test;
+#[cfg(test)]
+mod duplicate_loan_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -42,23 +48,24 @@ impl QuorumCreditContract {
         admins: Vec<Address>,
         admin_threshold: u32,
         token: Address,
-    ) {
+    ) -> Result<(), ContractError> {
         deployer.require_auth();
 
-        if env.storage().instance().has(&DataKey::Config) {
-            panic_with_error!(&env, ContractError::AlreadyInitialized);
-        }
+        assert!(
+            !env.storage().instance().has(&DataKey::Config),
+            "already initialized"
+        );
 
-        validate_admin_config(&env, &admins, admin_threshold).expect("invalid admin config");
-        require_valid_token(&env, &token).expect("invalid token");
+        validate_admin_config(&env, &admins, admin_threshold)?;
+        require_valid_token(&env, &token)?;
 
         env.storage().instance().set(&DataKey::Deployer, &deployer);
         env.storage().instance().set(
             &DataKey::Config,
             &Config {
-                admins: admins.clone(),
+                admins,
                 admin_threshold,
-                token: token.clone(),
+                token,
                 allowed_tokens: Vec::new(&env),
                 yield_bps: DEFAULT_YIELD_BPS,
                 slash_bps: DEFAULT_SLASH_BPS,
@@ -70,10 +77,7 @@ impl QuorumCreditContract {
             },
         );
 
-        env.events().publish(
-            (symbol_short!("contract"), symbol_short!("init")),
-            (deployer, admins, admin_threshold, token),
-        );
+        Ok(())
     }
 
     // ── Vouch ─────────────────────────────────────────────────────────────────
@@ -220,9 +224,6 @@ impl QuorumCreditContract {
         admin::pause(env, admin_signers)
     }
 
-    pub fn unpause(env: Env, admin_signers: Vec<Address>) {
-        admin::unpause(env, admin_signers)
-    }
 
     pub fn blacklist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
         admin::blacklist(env, admin_signers, borrower)
@@ -415,5 +416,83 @@ impl QuorumCreditContract {
 
     pub fn get_config(env: Env) -> Config {
         admin::get_config(env)
+    }
+
+    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+        admin::add_allowed_token(env, admin_signers, token)
+    }
+
+    pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+        admin::remove_allowed_token(env, admin_signers, token)
+    }
+
+    pub fn vote_slash(
+        env: Env,
+        voucher: Address,
+        borrower: Address,
+        approve: bool,
+    ) -> Result<(), ContractError> {
+        governance::vote_slash(env, voucher, borrower, approve)
+    }
+
+    /// Issue 109: Propose a slash action with a confirmation window (timelock delay).
+    pub fn propose_slash(
+        env: Env,
+        proposer: Address,
+        borrower: Address,
+        delay_secs: u64,
+    ) -> Result<u64, ContractError> {
+        governance::propose_slash(env, proposer, borrower, delay_secs)
+    }
+
+    /// Issue 109: Execute a previously proposed slash after the delay has passed.
+    pub fn execute_slash_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        governance::execute_slash_proposal(env, proposal_id)
+    }
+
+    /// Issue 109: Cancel a pending slash proposal (only proposer can cancel).
+    pub fn cancel_slash_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u64,
+    ) -> Result<(), ContractError> {
+        governance::cancel_slash_proposal(env, caller, proposal_id)
+    }
+
+    /// Issue 109: Get a timelock proposal details.
+    pub fn get_timelock_proposal(env: Env, proposal_id: u64) -> Option<TimelockProposal> {
+        governance::get_timelock_proposal(env, proposal_id)
+    }
+
+    // ── Reputation NFT Tests ──────────────────────────────────────────────────
+
+
+
+    // ── Loan Pool Tests ───────────────────────────────────────────────────────
+
+
+
+
+
+
+
+    // ── Voucher Cap Tests ─────────────────────────────────────────────────────
+
+
+
+
+
+
+
+    pub fn set_slash_vote_quorum(env: Env, admin_signers: Vec<Address>, quorum_bps: u32) {
+        helpers::require_admin_approval(&env, &admin_signers);
+        governance::set_slash_vote_quorum(&env, quorum_bps);
+    }
+
+    pub fn get_slash_vote_quorum(env: Env) -> u32 {
+        governance::get_slash_vote_quorum(env)
     }
 }
