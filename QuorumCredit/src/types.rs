@@ -120,7 +120,7 @@ pub struct LoanRecord {
 #[derive(Clone)]
 pub struct VouchRecord {
     pub voucher: Address,
-    pub stake: i128,          // in stroops
+    pub amount: i128,         // in stroops
     pub vouch_timestamp: u64, // ledger timestamp when vouch was created; immutable after set
     pub token: Address,       // token this stake is denominated in
 }

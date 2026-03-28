@@ -84,7 +84,7 @@ fn do_vouch(
 
     vouches.push_back(VouchRecord {
         voucher: voucher.clone(),
-        stake,
+        amount: stake,
         vouch_timestamp: env.ledger().timestamp(),
         token: token.clone(),
     });
@@ -158,7 +158,7 @@ pub fn increase_stake(
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
     token_client.transfer(&voucher, &env.current_contract_address(), &additional);
 
-    vouch_rec.stake += additional;
+    vouch_rec.amount += additional;
     vouches.set(idx, vouch_rec);
 
     env.storage()
@@ -192,11 +192,11 @@ pub fn decrease_stake(
         .expect("vouch not found") as u32;
 
     let mut vouch_rec = vouches.get(idx).unwrap();
-    assert!(amount <= vouch_rec.stake, "decrease amount exceeds staked amount");
+    assert!(amount <= vouch_rec.amount, "decrease amount exceeds staked amount");
 
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
-    vouch_rec.stake -= amount;
-    if vouch_rec.stake == 0 {
+    vouch_rec.amount -= amount;
+    if vouch_rec.amount == 0 {
         vouches.remove(idx);
     } else {
         vouches.set(idx, vouch_rec);
@@ -231,7 +231,7 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
         .ok_or(ContractError::UnauthorizedCaller)? as u32;
 
     let vouch_rec = vouches.get(idx).unwrap();
-    let stake = vouch_rec.stake;
+    let stake = vouch_rec.amount;
     let token_addr = vouch_rec.token.clone();
     vouches.remove(idx);
 
@@ -280,12 +280,12 @@ pub fn transfer_vouch(
         .ok_or(ContractError::UnauthorizedCaller)? as u32;
 
     let from_record = vouches.get(from_idx).unwrap();
-    let stake_to_transfer = from_record.stake;
+    let stake_to_transfer = from_record.amount;
 
     if let Some(to_idx) = vouches.iter().position(|v| v.voucher == to) {
         // Merge into existing record for 'to'
         let mut to_record = vouches.get(to_idx as u32).unwrap();
-        to_record.stake += stake_to_transfer;
+        to_record.amount += stake_to_transfer;
         vouches.set(to_idx as u32, to_record);
         vouches.remove(from_idx);
     } else {
@@ -353,7 +353,7 @@ pub fn total_vouched(env: Env, borrower: Address) -> Result<i128, ContractError>
     let mut total: i128 = 0;
     for vouch in vouches.iter() {
         total = total
-            .checked_add(vouch.stake)
+            .checked_add(vouch.amount)
             .ok_or(ContractError::StakeOverflow)?;
     }
 
@@ -407,14 +407,14 @@ mod tests {
 
         vouches.push_back(VouchRecord {
             voucher: voucher1,
-            stake: i128::MAX - 1000,
+            amount: i128::MAX - 1000,
             vouch_timestamp: 0,
             token: token.clone(),
         });
 
         vouches.push_back(VouchRecord {
             voucher: voucher2,
-            stake: 2000, // This would cause overflow when added to the first stake
+            amount: 2000, // This would cause overflow when added to the first stake
             vouch_timestamp: 0,
             token: token.clone(),
         });
@@ -456,14 +456,14 @@ mod tests {
 
         vouches.push_back(VouchRecord {
             voucher: voucher1,
-            stake: 1_000_000,
+            amount: 1_000_000,
             vouch_timestamp: 0,
             token: token.clone(),
         });
 
         vouches.push_back(VouchRecord {
             voucher: voucher2,
-            stake: 2_500_000,
+            amount: 2_500_000,
             vouch_timestamp: 0,
             token: token.clone(),
         });

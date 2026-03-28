@@ -308,7 +308,7 @@ mod security_fixes_tests {
         let vouches = s.client.get_vouches(&borrower).unwrap_or(Vec::new(&s.env));
         let mut retrieved_total: i128 = 0;
         for v in vouches.iter() {
-            retrieved_total += v.stake;
+            retrieved_total += v.amount;
         }
         
         assert_eq!(

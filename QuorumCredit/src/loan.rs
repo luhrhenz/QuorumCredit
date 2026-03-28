@@ -1,7 +1,7 @@
 use crate::errors::ContractError;
 use crate::helpers::{
     config, get_active_loan_record, get_slash_balance, has_active_loan, next_loan_id, require_allowed_token,
-    require_not_paused,
+    require_not_paused, validate_loan_active,
 };
 use crate::reputation::ReputationNftExternalClient;
 use crate::types::{DataKey, LoanRecord, LoanStatus, VouchRecord, DEFAULT_REFERRAL_BONUS_BPS, MIN_VOUCH_AGE};
@@ -103,7 +103,7 @@ pub fn request_loan(
     let mut total_stake: i128 = 0;
     for v in token_vouches.iter() {
         total_stake = total_stake
-            .checked_add(v.stake)
+            .checked_add(v.amount)
             .ok_or(ContractError::StakeOverflow)?;
     }
     if total_stake < threshold {
@@ -211,13 +211,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     if borrower != loan.borrower {
         return Err(ContractError::UnauthorizedCaller);
     }
-    if loan.status != LoanStatus::Active {
-        if loan.status == LoanStatus::Repaid {
-            panic!("loan already repaid");
-        } else {
-            return Err(ContractError::NoActiveLoan);
-        }
-    }
+    validate_loan_active(&loan)?;
     assert!(
         env.ledger().timestamp() <= loan.deadline,
         "loan deadline has passed"
@@ -252,7 +246,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
         let mut total_stake: i128 = 0;
         for v in vouches.iter() {
             if v.token == loan.token_address {
-                total_stake += v.stake;
+                total_stake += v.amount;
             }
         }
 
@@ -265,7 +259,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
                 continue;
             }
             let voucher_yield = if total_stake > 0 {
-                (available_for_yield * v.stake) / total_stake
+                (available_for_yield * v.amount) / total_stake
             } else {
                 0
             };
@@ -280,7 +274,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             loan_token.transfer(
                 &env.current_contract_address(),
                 &v.voucher,
-                &(v.stake + voucher_yield),
+                &(v.amount + voucher_yield),
             );
         }
 
@@ -379,7 +373,7 @@ pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {
         .get(&DataKey::Vouches(borrower))
         .unwrap_or(Vec::new(&env));
 
-    let total_stake: i128 = vouches.iter().map(|v| v.stake).sum();
+    let total_stake: i128 = vouches.iter().map(|v| v.amount).sum();
     total_stake >= threshold
 }
 
