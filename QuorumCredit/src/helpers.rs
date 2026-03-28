@@ -174,6 +174,11 @@ pub fn require_valid_token(env: &Env, addr: &Address) -> Result<(), ContractErro
     Ok(())
 }
 
+/// Compute `amount * bps / 10_000` — basis-point math helper.
+pub fn bps_of(amount: i128, bps: i128) -> i128 {
+    amount * bps / 10_000
+}
+
 pub fn validate_admin_config(
     env: &Env,
     admins: &Vec<Address>,

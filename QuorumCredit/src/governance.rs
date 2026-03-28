@@ -1,5 +1,5 @@
 use crate::errors::ContractError;
-use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused};
+use crate::helpers::{add_slash_balance, bps_of, config, get_active_loan_record, require_not_paused};
 use crate::types::{DataKey, SlashVoteRecord, VouchRecord, TimelockProposal, TimelockAction};
 use soroban_sdk::{symbol_short, Address, Env, Vec};
 
@@ -136,6 +136,10 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         .get(&DataKey::Vouches(borrower.clone()))
         .unwrap_or(Vec::new(env));
 
+    if vouches.is_empty() {
+        panic!("no vouchers found for borrower");
+    }
+
     // Mark loan as defaulted first so we can read token_address.
     let mut loan = get_active_loan_record(env, borrower)?;
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
@@ -146,7 +150,7 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
         if v.token != loan.token_address {
             continue;
         }
-        let slash_amount = v.stake * cfg.slash_bps / 10_000;
+        let slash_amount = bps_of(v.stake, cfg.slash_bps);
         let remaining = v.stake - slash_amount;
         total_slashed += slash_amount;
 
