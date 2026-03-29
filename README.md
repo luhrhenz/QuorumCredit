@@ -312,6 +312,57 @@ Borrower
                            └── Default → 50% of stakes slashed
 ```
 
+### Loan Lifecycle: Repay Flow
+
+```mermaid
+sequenceDiagram
+    actor Voucher
+    actor Borrower
+    participant Contract
+    participant Token
+
+    Voucher->>Token: transfer stake to Contract
+    Token-->>Contract: stake held
+    Voucher->>Contract: vouch(voucher, borrower, stake)
+
+    Borrower->>Contract: request_loan(borrower, amount, threshold)
+    Contract->>Contract: assert total_stake >= threshold
+    Contract->>Token: transfer amount to Borrower
+    Token-->>Borrower: loan disbursed
+
+    Borrower->>Token: transfer repayment to Contract
+    Token-->>Contract: repayment received
+    Borrower->>Contract: repay(borrower, payment)
+    Contract->>Token: return stake + 2% yield to Voucher
+    Token-->>Voucher: stake + yield
+```
+
+### Loan Lifecycle: Slash Flow
+
+```mermaid
+sequenceDiagram
+    actor Voucher
+    actor Borrower
+    actor Admin
+    participant Contract
+    participant Token
+
+    Voucher->>Token: transfer stake to Contract
+    Token-->>Contract: stake held
+    Voucher->>Contract: vouch(voucher, borrower, stake)
+
+    Borrower->>Contract: request_loan(borrower, amount, threshold)
+    Contract->>Contract: assert total_stake >= threshold
+    Contract->>Token: transfer amount to Borrower
+    Token-->>Borrower: loan disbursed
+
+    note over Borrower: Borrower defaults — no repayment
+
+    Admin->>Contract: slash(admin_signers, borrower)
+    Contract->>Contract: burn 50% of each voucher's stake
+    Contract-->>Voucher: 50% of stake lost
+```
+
 **Key concepts:**
 
 - **Proof of Trust (PoT):** Social collateral replaces asset collateral
