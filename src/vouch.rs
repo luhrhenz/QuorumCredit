@@ -238,14 +238,20 @@ pub fn decrease_stake(
     if vouches.is_empty() {
         env.storage()
             .persistent()
-            .remove(&DataKey::Vouches(borrower));
+            .remove(&DataKey::Vouches(borrower.clone()));
     } else {
         env.storage()
             .persistent()
-            .set(&DataKey::Vouches(borrower), &vouches);
+            .set(&DataKey::Vouches(borrower.clone()), &vouches);
     }
 
     token_client.transfer(&env.current_contract_address(), &voucher, &amount);
+
+    // Issue #371: Emit event for stake decrease
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("decreased")),
+        (voucher, borrower, amount),
+    );
 
     Ok(())
 }
@@ -609,5 +615,43 @@ mod tests {
         let last_event = events.last().unwrap();
         assert_eq!(last_event.0.get(0).unwrap().to_string(), "vouch");
         assert_eq!(last_event.0.get(1).unwrap().to_string(), "increased");
+    }
+
+    /// Issue #371: decrease_stake emits an event.
+    #[test]
+    fn test_decrease_stake_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+
+        // Initial vouch
+        client.vouch(&voucher, &borrower, &1_000_000, &token);
+
+        // Clear events from initial vouch
+        env.events().all();
+
+        // Decrease stake
+        client.decrease_stake(&voucher, &borrower, &300_000);
+
+        // Check that event was emitted
+        let events = env.events().all();
+        assert!(!events.is_empty());
+        
+        // Verify the event contains the expected data
+        let last_event = events.last().unwrap();
+        assert_eq!(last_event.0.get(0).unwrap().to_string(), "vouch");
+        assert_eq!(last_event.0.get(1).unwrap().to_string(), "decreased");
     }
 }
