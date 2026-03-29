@@ -44,6 +44,8 @@ mod get_loan_none_test;
 
 // #[cfg(test)]
 #[cfg(test)]
+mod loan_overwrite_protection_test;
+#[cfg(test)]
 mod max_vouchers_per_borrower_test;
 #[cfg(test)]
 mod paused_state_test;
