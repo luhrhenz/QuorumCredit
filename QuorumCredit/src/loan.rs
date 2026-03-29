@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    bps_of, config, get_active_loan_record, get_slash_balance, has_active_loan, next_loan_id,
+    bps_of, config, extend_ttl, get_active_loan_record, get_slash_balance, has_active_loan, next_loan_id,
     require_allowed_token, require_not_paused, validate_loan_active,
 };
 use crate::reputation::ReputationNftExternalClient;
@@ -203,7 +203,7 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             // Check if there's a latest loan that is already repaid
             if let Some(latest_loan) = crate::helpers::get_latest_loan_record(&env, &borrower) {
                 if latest_loan.status == LoanStatus::Repaid {
-                    panic!("loan already repaid");
+                    return Err(ContractError::AlreadyRepaid);
                 }
             }
             return Err(ContractError::NoActiveLoan);

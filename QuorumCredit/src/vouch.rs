@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::helpers::{
-    has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
+    extend_ttl, has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
 use crate::types::{DataKey, VouchRecord};
 use soroban_sdk::{symbol_short, Address, Env, Vec};

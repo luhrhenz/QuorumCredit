@@ -257,25 +257,25 @@ pub fn execute_slash_proposal(
         .storage()
         .instance()
         .get(&DataKey::Timelock(proposal_id))
-        .ok_or(ContractError::NoActiveLoan)?; // Use existing error as placeholder
+        .ok_or(ContractError::TimelockNotFound)?;
 
     // Check proposal state
     if proposal.executed {
         return Err(ContractError::SlashAlreadyExecuted);
     }
     if proposal.cancelled {
-        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+        return Err(ContractError::TimelockNotFound);
     }
 
     // Check delay has passed
     if env.ledger().timestamp() < proposal.eta {
-        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+        return Err(ContractError::TimelockNotReady);
     }
 
     // Check expiry (72 hours from eta)
     const TIMELOCK_EXPIRY: u64 = 72 * 60 * 60;
     if env.ledger().timestamp() > proposal.eta + TIMELOCK_EXPIRY {
-        return Err(ContractError::NoActiveLoan); // Use existing error as placeholder
+        return Err(ContractError::TimelockExpired);
     }
 
     // Extract borrower from the Slash action
@@ -315,7 +315,9 @@ pub fn cancel_slash_proposal(
         .ok_or(ContractError::NoActiveLoan)?;
 
     // Only proposer can cancel
-    assert!(caller == proposal.proposer, "only proposer can cancel");
+    if caller != proposal.proposer {
+        return Err(ContractError::UnauthorizedCaller);
+    }
 
     if proposal.executed || proposal.cancelled {
         return Err(ContractError::SlashAlreadyExecuted);

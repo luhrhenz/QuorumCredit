@@ -40,4 +40,5 @@ pub enum ContractError {
     AlreadyVoted = 31,
     SlashVoteNotFound = 32,
     SlashAlreadyExecuted = 33,
+    AlreadyRepaid = 34,
 }
