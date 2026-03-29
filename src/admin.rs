@@ -116,6 +116,17 @@ pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address
         .set(&DataKey::VoucherWhitelist(voucher), &true);
 }
 
+pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: bool) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::WhitelistEnabled, &enabled);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("wlena")),
+        (admin_signers.get(0).unwrap(), enabled),
+    );
+}
+
 pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
     require_admin_approval(&env, &admin_signers);
     env.storage()
@@ -370,6 +381,13 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
     env.storage()
         .persistent()
         .get(&DataKey::VoucherWhitelist(voucher))
+        .unwrap_or(false)
+}
+
+pub fn is_whitelist_enabled(env: Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::WhitelistEnabled)
         .unwrap_or(false)
 }
 

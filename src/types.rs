@@ -61,6 +61,7 @@ pub enum DataKey {
     TimelockCounter, // u64 monotonically increasing proposal ID
     Blacklisted(Address), // borrower → bool permanently banned
     VoucherWhitelist(Address), // voucher → bool allowed to vouch
+    WhitelistEnabled, // bool: true when voucher whitelist is enabled (opt-in)
     ExtensionConsents(Address), // borrower → Vec<Address> vouchers who consented to extension
     SlashVote(Address), // borrower → SlashVoteRecord
     SlashVoteQuorum, // u32 quorum in basis points (e.g. 5000 = 50%)

@@ -40,6 +40,23 @@ fn do_vouch(
         return Err(ContractError::Blacklisted);
     }
 
+    // Check voucher whitelist if enabled
+    let whitelist_enabled: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::WhitelistEnabled)
+        .unwrap_or(false);
+    if whitelist_enabled {
+        let is_whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherWhitelist(voucher.clone()))
+            .unwrap_or(false);
+        if !is_whitelisted {
+            return Err(ContractError::VoucherNotWhitelisted);
+        }
+    }
+
     // Validate token is allowed.
     let token_client = require_allowed_token(env, &token)?;
 
@@ -565,5 +582,89 @@ mod tests {
         // Attempt to vouch for blacklisted borrower should fail
         let result = client.try_vouch(&voucher, &borrower, &stake, &token);
         assert_eq!(result, Err(Ok(ContractError::Blacklisted)));
+    }
+
+    /// Issue #375: Whitelist enforcement in do_vouch
+    #[test]
+    fn test_vouch_whitelisted_voucher_allowed() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Enable whitelist
+        client.set_whitelist_enabled(&admins, &true);
+
+        // Whitelist the voucher
+        client.whitelist_voucher(&admins, &voucher);
+
+        // Vouch should succeed
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert!(result.is_ok());
+    }
+
+    /// Issue #375: Non-whitelisted voucher rejected when whitelist enabled
+    #[test]
+    fn test_vouch_non_whitelisted_voucher_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Enable whitelist
+        client.set_whitelist_enabled(&admins, &true);
+
+        // Try to vouch without being whitelisted
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert_eq!(result, Err(Ok(ContractError::VoucherNotWhitelisted)));
+    }
+
+    /// Issue #375: Whitelist disabled by default (opt-in)
+    #[test]
+    fn test_vouch_whitelist_disabled_by_default() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Whitelist is disabled by default, so any voucher can vouch
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert!(result.is_ok());
     }
 }
