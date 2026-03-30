@@ -3,7 +3,7 @@ use crate::helpers::{
     has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
 };
 use crate::types::{DataKey, VouchRecord};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 pub fn vouch(
     env: Env,
@@ -27,8 +27,9 @@ fn do_vouch(
     // Validate numeric input: stake must be strictly positive.
     require_positive_amount(env, stake)?;
 
-    assert!(voucher != borrower, "voucher cannot vouch for self");
-    assert!(stake > 0, "stake must be greater than zero");
+    if voucher == borrower {
+        panic_with_error!(env, ContractError::UnauthorizedCaller);
+    }
 
     // Check if borrower is blacklisted
     if env
@@ -173,11 +174,12 @@ pub fn batch_vouch(
     voucher.require_auth();
     require_not_paused(&env)?;
 
-    assert!(
-        borrowers.len() == stakes.len(),
-        "borrowers and stakes length mismatch"
-    );
-    assert!(!borrowers.is_empty(), "batch cannot be empty");
+    if borrowers.len() != stakes.len() {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
+    if borrowers.is_empty() {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
 
     for i in 0..borrowers.len() {
         let borrower = borrowers.get(i).unwrap();
@@ -240,8 +242,12 @@ pub fn decrease_stake(
     voucher.require_auth();
     require_not_paused(&env)?;
 
-    assert!(amount > 0, "decrease amount must be greater than zero");
-    assert!(!has_active_loan(&env, &borrower), "loan already active");
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -255,10 +261,9 @@ pub fn decrease_stake(
         .expect("vouch not found") as u32;
 
     let mut vouch_rec = vouches.get(idx).unwrap();
-    assert!(
-        amount <= vouch_rec.stake,
-        "decrease amount exceeds staked amount"
-    );
+    if amount > vouch_rec.stake {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
 
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
     vouch_rec.stake -= amount;
@@ -293,7 +298,10 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
     voucher.require_auth();
     require_not_paused(&env)?;
 
-    assert!(!has_active_loan(&env, &borrower), "loan already active");
+    // Only allow withdraw before a loan is active.
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -346,7 +354,9 @@ pub fn transfer_vouch(
     }
 
     // Only allow transfer before a loan is active (consistent with withdraw_vouch).
-    assert!(!has_active_loan(&env, &borrower), "loan already active");
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()

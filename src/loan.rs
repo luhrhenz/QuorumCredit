@@ -19,11 +19,12 @@ pub fn register_referral(
     borrower.require_auth();
     require_not_paused(&env)?;
 
-    assert!(borrower != referrer, "borrower cannot refer themselves");
-    assert!(
-        !has_active_loan(&env, &borrower),
-        "cannot set referral with active loan"
-    );
+    if borrower == referrer {
+        panic_with_error!(&env, ContractError::UnauthorizedCaller);
+    }
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
     // Idempotent: overwrite is fine (borrower signs).
     env.storage()
         .persistent()
@@ -82,7 +83,9 @@ pub fn request_loan(
     if amount < cfg.min_loan_amount {
         return Err(ContractError::LoanBelowMinAmount);
     }
-    assert!(threshold > 0, "threshold must be greater than zero");
+    if threshold <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
 
     let max_loan_amount: i128 = env
         .storage()
@@ -93,10 +96,9 @@ pub fn request_loan(
         return Err(ContractError::LoanExceedsMaxAmount);
     }
 
-    assert!(
-        !has_active_loan(&env, &borrower),
-        "borrower already has an active loan"
-    );
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let vouches: Vec<VouchRecord> = env
         .storage()
@@ -139,10 +141,9 @@ pub fn request_loan(
     }
 
     let max_allowed_loan = total_stake * cfg.max_loan_to_stake_ratio as i128 / 100;
-    assert!(
-        amount <= max_allowed_loan,
-        "loan amount exceeds maximum collateral ratio"
-    );
+    if amount > max_allowed_loan {
+        panic_with_error!(&env, ContractError::LoanExceedsMaxAmount);
+    }
 
     let contract_balance = token_client.balance(&env.current_contract_address());
     if contract_balance < amount {
@@ -220,18 +221,15 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
     if loan.status != LoanStatus::Active {
         return Err(ContractError::NoActiveLoan);
     }
-    assert!(
-        env.ledger().timestamp() <= loan.deadline,
-        "loan deadline has passed"
-    );
+    if env.ledger().timestamp() > loan.deadline {
+        panic_with_error!(&env, ContractError::LoanPastDeadline);
+    }
 
-    // Total obligation = principal + yield locked in at disbursement.
     let total_owed = loan.amount + loan.total_yield;
     let outstanding = total_owed - loan.amount_repaid;
-    assert!(
-        payment > 0 && payment <= outstanding,
-        "invalid payment amount"
-    );
+    if payment <= 0 || payment > outstanding {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
 
     let token = soroban_sdk::token::Client::new(&env, &loan.token_address);
 
@@ -293,11 +291,9 @@ pub fn repay(env: Env, borrower: Address, payment: i128) -> Result<(), ContractE
             };
             total_distributed += voucher_yield;
 
-            // Assert that we're not exceeding available yield
-            assert!(
-                total_distributed <= available_for_yield,
-                "yield distribution would exceed available funds"
-            );
+            if total_distributed > available_for_yield {
+                panic_with_error!(&env, ContractError::InsufficientFunds);
+            }
 
             loan_token.transfer(
                 &env.current_contract_address(),

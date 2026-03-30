@@ -1,7 +1,7 @@
 use crate::errors::ContractError;
 use crate::helpers::{add_slash_balance, config, get_active_loan_record, require_not_paused};
 use crate::types::{DataKey, SlashVoteRecord, TimelockAction, TimelockProposal, VouchRecord};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 /// Default quorum: 50% of total vouched stake must approve.
 const DEFAULT_SLASH_VOTE_QUORUM_BPS: u32 = 5_000;
@@ -54,7 +54,7 @@ pub fn vote_slash(
         });
 
     if vote.executed {
-        panic!("already defaulted");
+        panic_with_error!(&env, ContractError::SlashAlreadyExecuted);
     }
 
     // Prevent double-voting.
@@ -110,10 +110,9 @@ pub fn get_slash_vote(env: Env, borrower: Address) -> Option<SlashVoteRecord> {
 /// Set the quorum threshold (in basis points) required to auto-execute a slash.
 /// Requires admin approval — called from admin module.
 pub fn set_slash_vote_quorum(env: &Env, quorum_bps: u32) {
-    assert!(
-        quorum_bps > 0 && quorum_bps <= 10_000,
-        "quorum_bps must be 1-10000"
-    );
+    if quorum_bps == 0 || quorum_bps > 10_000 {
+        panic_with_error!(env, ContractError::InvalidAmount);
+    }
     env.storage()
         .instance()
         .set(&DataKey::SlashVoteQuorum, &quorum_bps);
@@ -139,10 +138,9 @@ fn execute_slash(env: &Env, borrower: &Address) -> Result<(), ContractError> {
 
     // Mark loan as defaulted first so we can read token_address.
     let mut loan = get_active_loan_record(env, borrower)?;
-    assert!(
-        loan.status != crate::types::LoanStatus::Defaulted,
-        "already defaulted"
-    );
+    if loan.status == crate::types::LoanStatus::Defaulted {
+        panic_with_error!(env, ContractError::SlashAlreadyExecuted);
+    }
     let loan_token = soroban_sdk::token::Client::new(env, &loan.token_address);
 
     let mut total_slashed: i128 = 0;
@@ -323,7 +321,9 @@ pub fn cancel_slash_proposal(
         .ok_or(ContractError::NoActiveLoan)?;
 
     // Only proposer can cancel
-    assert!(caller == proposal.proposer, "only proposer can cancel");
+    if caller != proposal.proposer {
+        panic_with_error!(&env, ContractError::UnauthorizedCaller);
+    }
 
     if proposal.executed || proposal.cancelled {
         return Err(ContractError::SlashAlreadyExecuted);

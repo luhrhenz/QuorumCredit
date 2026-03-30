@@ -1,6 +1,6 @@
 use crate::errors::ContractError;
 use crate::types::{Config, DataKey, LoanRecord};
-use soroban_sdk::{token, Address, Env, String, Vec};
+use soroban_sdk::{panic_with_error, token, Address, Env, String, Vec};
 
 /// Returns true if the address is the all-zeros account or contract address.
 pub fn is_zero_address(env: &Env, addr: &Address) -> bool {
@@ -117,15 +117,13 @@ pub fn require_allowed_token<'a>(
 
 pub fn require_admin_approval(env: &Env, admin_signers: &Vec<Address>) {
     let config = config(env);
-    assert!(
-        admin_signers.len() >= config.admin_threshold,
-        "insufficient admin approvals"
-    );
+    if admin_signers.len() < config.admin_threshold {
+        panic_with_error!(env, ContractError::UnauthorizedCaller);
+    }
     for signer in admin_signers.iter() {
-        assert!(
-            config.admins.iter().any(|a| a == signer),
-            "signer is not a registered admin"
-        );
+        if !config.admins.iter().any(|a| a == signer) {
+            panic_with_error!(env, ContractError::UnauthorizedCaller);
+        }
         signer.require_auth();
     }
 }
@@ -161,27 +159,25 @@ pub fn validate_admin_config(
     admins: &Vec<Address>,
     admin_threshold: u32,
 ) -> Result<(), ContractError> {
-    assert!(!admins.is_empty(), "at least one admin is required");
-    assert!(
-        admin_threshold > 0,
-        "admin threshold must be greater than zero"
-    );
-    assert!(
-        admin_threshold <= admins.len(),
-        "admin threshold cannot exceed admin count"
-    );
+    if admins.is_empty() {
+        panic_with_error!(env, ContractError::UnauthorizedCaller);
+    }
+    if admin_threshold == 0 {
+        panic_with_error!(env, ContractError::InvalidAmount);
+    }
+    if admin_threshold > admins.len() {
+        panic_with_error!(env, ContractError::InvalidAmount);
+    }
 
     let admin_count = admins.len();
     for i in 0..admin_count {
         let admin = admins.get(i).unwrap();
-
-        // Validate admin address is not zero
         require_valid_address(env, &admin)?;
-
-        // Check for duplicates
         for j in 0..i {
             let prior_admin = admins.get(j).unwrap();
-            assert!(admin != prior_admin, "duplicate admin");
+            if admin == prior_admin {
+                panic_with_error!(env, ContractError::ZeroAddress);
+            }
         }
     }
 

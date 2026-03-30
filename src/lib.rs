@@ -88,13 +88,6 @@ impl QuorumCreditContract {
             panic_with_error!(&env, ContractError::AlreadyInitialized);
         }
 
-        validate_admin_config(&env, &admins, admin_threshold).expect("invalid admin config");
-        require_valid_token(&env, &token).expect("invalid token");
-        assert!(
-            !env.storage().instance().has(&DataKey::Config),
-            "already initialized"
-        );
-
         validate_admin_config(&env, &admins, admin_threshold)?;
         require_valid_token(&env, &token)?;
 
@@ -299,7 +292,9 @@ impl QuorumCreditContract {
     /// * If bonus_bps exceeds 10000
     pub fn set_referral_bonus_bps(env: Env, admin_signers: Vec<Address>, bonus_bps: u32) {
         helpers::require_admin_approval(&env, &admin_signers);
-        assert!(bonus_bps <= 10_000, "bonus_bps must not exceed 10000");
+        if bonus_bps > 10_000 {
+            panic_with_error!(&env, ContractError::InvalidAmount);
+        }
         env.storage()
             .instance()
             .set(&DataKey::ReferralBonusBps, &bonus_bps);
