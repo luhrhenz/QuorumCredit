@@ -1,16 +1,16 @@
-use crate::helpers::{config, require_admin_approval, validate_admin_config};
+use crate::helpers::{config, require_admin_approval, require_valid_token, validate_admin_config};
 use crate::types::{Config, DataKey};
-use soroban_sdk::{symbol_short, Address, BytesN, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, BytesN, Env, Vec};
+use crate::errors::ContractError;
 
 pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
     require_admin_approval(&env, &admin_signers);
 
     let mut cfg = config(&env);
 
-    assert!(
-        !cfg.admins.iter().any(|a| a == new_admin),
-        "address is already an admin"
-    );
+    if cfg.admins.iter().any(|a| a == new_admin) {
+        panic_with_error!(&env, ContractError::AlreadyInitialized);
+    }
 
     cfg.admins.push_back(new_admin.clone());
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -22,6 +22,13 @@ pub fn add_admin(env: Env, admin_signers: Vec<Address>, new_admin: Address) {
 pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Address) {
     require_admin_approval(&env, &admin_signers);
 
+    // Issue #372: Prevent removing an admin who is one of the signers
+    for signer in admin_signers.iter() {
+        if signer == admin_to_remove {
+            panic_with_error!(&env, ContractError::UnauthorizedCaller);
+        }
+    }
+
     let mut cfg = config(&env);
 
     let idx = cfg
@@ -32,11 +39,12 @@ pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Addr
 
     cfg.admins.remove(idx);
 
-    assert!(!cfg.admins.is_empty(), "cannot remove the last admin");
-    assert!(
-        cfg.admin_threshold <= cfg.admins.len(),
-        "removal would make threshold unsatisfiable"
-    );
+    if cfg.admins.is_empty() {
+        panic_with_error!(&env, ContractError::UnauthorizedCaller);
+    }
+    if cfg.admin_threshold > cfg.admins.len() {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
 
     env.storage().instance().set(&DataKey::Config, &cfg);
 
@@ -49,14 +57,15 @@ pub fn remove_admin(env: Env, admin_signers: Vec<Address>, admin_to_remove: Addr
 pub fn rotate_admin(env: Env, admin_signers: Vec<Address>, old_admin: Address, new_admin: Address) {
     require_admin_approval(&env, &admin_signers);
 
-    assert!(old_admin != new_admin, "old and new admin must differ");
+    if old_admin == new_admin {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
 
     let mut cfg = config(&env);
 
-    assert!(
-        !cfg.admins.iter().any(|a| a == new_admin),
-        "new admin is already in the admin set"
-    );
+    if cfg.admins.iter().any(|a| a == new_admin) {
+        panic_with_error!(&env, ContractError::AlreadyInitialized);
+    }
 
     let idx = cfg
         .admins
@@ -78,11 +87,12 @@ pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold:
 
     let mut cfg = config(&env);
 
-    assert!(new_threshold > 0, "threshold must be greater than zero");
-    assert!(
-        new_threshold <= cfg.admins.len(),
-        "threshold cannot exceed admin count"
-    );
+    if new_threshold == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if new_threshold > cfg.admins.len() {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
 
     cfg.admin_threshold = new_threshold;
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -95,7 +105,9 @@ pub fn set_admin_threshold(env: Env, admin_signers: Vec<Address>, new_threshold:
 
 pub fn set_protocol_fee(env: Env, admin_signers: Vec<Address>, fee_bps: u32) {
     require_admin_approval(&env, &admin_signers);
-    assert!(fee_bps <= 10_000, "fee_bps must not exceed 10000");
+    if fee_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
     env.storage()
         .instance()
         .set(&DataKey::ProtocolFeeBps, &fee_bps);
@@ -114,6 +126,17 @@ pub fn whitelist_voucher(env: Env, admin_signers: Vec<Address>, voucher: Address
     env.storage()
         .persistent()
         .set(&DataKey::VoucherWhitelist(voucher), &true);
+}
+
+pub fn set_whitelist_enabled(env: Env, admin_signers: Vec<Address>, enabled: bool) {
+    require_admin_approval(&env, &admin_signers);
+    env.storage()
+        .instance()
+        .set(&DataKey::WhitelistEnabled, &enabled);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("wlena")),
+        (admin_signers.get(0).unwrap(), enabled),
+    );
 }
 
 pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
@@ -160,27 +183,24 @@ pub fn set_config(env: Env, admin_signers: Vec<Address>, config: Config) {
     require_admin_approval(&env, &admin_signers);
     validate_admin_config(&env, &config.admins, config.admin_threshold)
         .expect("invalid admin config");
-    assert!(config.yield_bps >= 0, "yield_bps must be non-negative");
-    assert!(
-        config.slash_bps > 0 && config.slash_bps <= 10_000,
-        "slash_bps must be 1-10000"
-    );
-    assert!(
-        config.max_vouchers > 0,
-        "max_vouchers must be greater than zero"
-    );
-    assert!(
-        config.min_loan_amount > 0,
-        "min_loan_amount must be greater than zero"
-    );
-    assert!(
-        config.loan_duration > 0,
-        "loan_duration must be greater than zero"
-    );
-    assert!(
-        config.max_loan_to_stake_ratio > 0,
-        "max_loan_to_stake_ratio must be greater than zero"
-    );
+    if config.yield_bps < 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if config.slash_bps <= 0 || config.slash_bps > 10_000 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if config.max_vouchers == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if config.min_loan_amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if config.loan_duration == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if config.max_loan_to_stake_ratio == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
     env.storage().instance().set(&DataKey::Config, &config);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("config")),
@@ -199,15 +219,16 @@ pub fn update_config(
     let mut cfg = config(&env);
 
     if let Some(new_yield_bps) = yield_bps {
-        assert!(new_yield_bps >= 0, "yield_bps must be non-negative");
+        if new_yield_bps < 0 {
+            panic_with_error!(&env, ContractError::InvalidAmount);
+        }
         cfg.yield_bps = new_yield_bps;
     }
 
     if let Some(new_slash_bps) = slash_bps {
-        assert!(
-            new_slash_bps > 0 && new_slash_bps <= 10_000,
-            "slash_bps must be 1-10000"
-        );
+        if new_slash_bps <= 0 || new_slash_bps > 10_000 {
+            panic_with_error!(&env, ContractError::InvalidAmount);
+        }
         cfg.slash_bps = new_slash_bps;
     }
 
@@ -233,9 +254,18 @@ pub fn set_reputation_nft(env: Env, admin_signers: Vec<Address>, nft_contract: A
     );
 }
 
+/// Set the minimum allowed vouch stake.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `admin_signers` - Admin addresses authorizing this call (must meet threshold)
+/// * `amount` - Minimum stake amount, in stroops (0 disables the minimum check).
+///   1 XLM = 10,000,000 stroops.
 pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
     require_admin_approval(&env, &admin_signers);
-    assert!(amount >= 0, "min stake cannot be negative");
+    if amount < 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
     env.storage().instance().set(&DataKey::MinStake, &amount);
     env.events().publish(
         (symbol_short!("admin"), symbol_short!("minstake")),
@@ -247,9 +277,18 @@ pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
     );
 }
 
+/// Set the maximum loan amount allowed per loan request.
+///
+/// # Arguments
+/// * `env` - Soroban environment
+/// * `admin_signers` - Admin addresses authorizing this call (must meet threshold)
+/// * `amount` - Maximum loan amount, in stroops (0 = no cap enforced).
+///   1 XLM = 10,000,000 stroops.
 pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
     require_admin_approval(&env, &admin_signers);
-    assert!(amount >= 0, "max loan amount cannot be negative");
+    if amount < 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
     env.storage()
         .instance()
         .set(&DataKey::MaxLoanAmount, &amount);
@@ -278,10 +317,9 @@ pub fn set_min_vouchers(env: Env, admin_signers: Vec<Address>, count: u32) {
 
 pub fn set_max_loan_to_stake_ratio(env: Env, admin_signers: Vec<Address>, ratio: u32) {
     require_admin_approval(&env, &admin_signers);
-    assert!(
-        ratio > 0,
-        "max_loan_to_stake_ratio must be greater than zero"
-    );
+    if ratio == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
     let mut cfg = config(&env);
     cfg.max_loan_to_stake_ratio = ratio;
     env.storage().instance().set(&DataKey::Config, &cfg);
@@ -337,11 +375,11 @@ pub fn get_config(env: Env) -> Config {
 
 pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
     require_admin_approval(&env, &admin_signers);
+    require_valid_token(&env, &token).expect("invalid token");
     let mut cfg = config(&env);
-    assert!(
-        !cfg.allowed_tokens.iter().any(|t| t == token) && token != cfg.token,
-        "token already allowed"
-    );
+    if cfg.allowed_tokens.iter().any(|t| t == token) || token == cfg.token {
+        panic_with_error!(&env, ContractError::DuplicateVouch);
+    }
     cfg.allowed_tokens.push_back(token);
     env.storage().instance().set(&DataKey::Config, &cfg);
 }
@@ -359,7 +397,7 @@ pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Addres
 }
 
 pub fn get_admins(env: Env) -> Vec<Address> {
-    config(&env).admins
+    crate::helpers::get_admins(&env)
 }
 
 pub fn get_admin_threshold(env: Env) -> u32 {
@@ -371,4 +409,66 @@ pub fn is_whitelisted(env: Env, voucher: Address) -> bool {
         .persistent()
         .get(&DataKey::VoucherWhitelist(voucher))
         .unwrap_or(false)
+}
+
+pub fn is_whitelist_enabled(env: Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::WhitelistEnabled)
+        .unwrap_or(false)
+}
+
+pub fn set_max_vouchers_per_borrower(env: Env, admin_signers: Vec<Address>, max_vouchers: u32) {
+    require_admin_approval(&env, &admin_signers);
+    if max_vouchers == 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::MaxVouchersPerBorrower, &max_vouchers);
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("maxvchbr")),
+        (
+            admin_signers.get(0).unwrap(),
+            max_vouchers,
+            env.ledger().timestamp(),
+        ),
+    );
+}
+
+pub fn get_max_vouchers_per_borrower(env: Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxVouchersPerBorrower)
+        .unwrap_or(crate::types::DEFAULT_MAX_VOUCHERS_PER_BORROWER)
+}
+
+pub fn withdraw_slash_treasury(
+    env: Env,
+    admin_signers: Vec<Address>,
+    recipient: Address,
+    amount: i128,
+) {
+    require_admin_approval(&env, &admin_signers);
+    assert!(amount > 0, "amount must be greater than zero");
+
+    let balance: i128 = env
+        .storage()
+        .instance()
+        .get(&DataKey::SlashTreasury)
+        .unwrap_or(0);
+    assert!(balance >= amount, "insufficient slash treasury balance");
+
+    env.storage()
+        .instance()
+        .set(&DataKey::SlashTreasury, &(balance - amount));
+
+    let cfg = config(&env);
+    soroban_sdk::token::Client::new(&env, &cfg.token)
+        .transfer(&env.current_contract_address(), &recipient, &amount);
+
+    env.events().publish(
+        (symbol_short!("admin"), symbol_short!("slshwdraw")),
+        (admin_signers.get(0).unwrap(), recipient, amount),
+    );
 }

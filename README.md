@@ -4,6 +4,9 @@
 
 Platform: Stellar Soroban | Language: Rust | License: MIT
 
+[![CI](https://github.com/your-org/QuorumCredit/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/QuorumCredit/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/your-org/QuorumCredit/branch/main/graph/badge.svg)](https://codecov.io/gh/your-org/QuorumCredit)
+
 ---
 
 ## About
@@ -19,13 +22,65 @@ This platform is designed for developers building on Stellar, fintech teams targ
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Stroop Unit Convention](#stroop-unit-convention)
 - [How It Works](#how-it-works)
 - [Project Structure](#project-structure)
 - [Setup Instructions](#setup-instructions)
 - [Testing](#testing)
 - [Deployment](#deployment)
 - [Architecture](#architecture)
+- [Error Reference](#error-reference)
 - [Contributing](#contributing)
+
+---
+
+## Stroop Unit Convention
+
+> [!IMPORTANT]
+> **All monetary amounts throughout this contract are denominated in _stroops_.**
+
+Stellar's smallest indivisible unit is the **stroop**:
+
+| Unit     | Conversion                     |
+|----------|--------------------------------|
+| 1 XLM    | 10,000,000 stroops             |
+| 1 stroop | 0.0000001 XLM (10⁻⁷ XLM)      |
+
+This applies universally to every `i128` parameter or field in the contract that represents a token quantity, including:
+
+| Field / Parameter     | Where used                                      |
+|-----------------------|-------------------------------------------------|
+| `stake`               | `vouch()`, `batch_vouch()`, `increase_stake()`, `decrease_stake()` |
+| `amount`              | `request_loan()`, `set_min_stake()`, `set_max_loan_amount()` |
+| `payment`             | `repay()`                                       |
+| `threshold`           | `request_loan()`, `is_eligible()`               |
+| `LoanRecord.amount`   | Total principal disbursed                       |
+| `LoanRecord.amount_repaid` | Cumulative repayment received             |
+| `LoanRecord.total_yield`   | Yield locked in at disbursement           |
+| `VouchRecord.stake`   | Staked collateral per voucher                   |
+| `Config.min_loan_amount` | Protocol minimum loan size                  |
+| `DEFAULT_MIN_LOAN_AMOUNT` | 100,000 stroops = 0.01 XLM              |
+| `DEFAULT_MIN_YIELD_STAKE` | 50 stroops (minimum for non-zero yield) |
+
+### Conversion helpers
+
+```
+// Rust (off-chain tooling)
+fn xlm_to_stroops(xlm: f64) -> i128 { (xlm * 10_000_000.0) as i128 }
+fn stroops_to_xlm(stroops: i128) -> f64 { stroops as f64 / 10_000_000.0 }
+```
+
+```js
+// JavaScript / TypeScript (frontend / SDK)
+const XLM_TO_STROOPS = 10_000_000n;
+const xlmToStroops = (xlm) => BigInt(Math.round(xlm * 10_000_000));
+const stroopsToXlm  = (stroops) => Number(stroops) / 10_000_000;
+```
+
+> [!NOTE]
+> When reading `LoanRecord`, `VouchRecord`, or any balance returned by the contract,
+> divide by `10_000_000` to display the equivalent XLM to users.
+> When accepting user input in XLM, multiply by `10_000_000` before passing to contract functions.
 
 ---
 
@@ -310,6 +365,57 @@ Borrower
                            └── Default → 50% of stakes slashed
 ```
 
+### Loan Lifecycle: Repay Flow
+
+```mermaid
+sequenceDiagram
+    actor Voucher
+    actor Borrower
+    participant Contract
+    participant Token
+
+    Voucher->>Token: transfer stake to Contract
+    Token-->>Contract: stake held
+    Voucher->>Contract: vouch(voucher, borrower, stake)
+
+    Borrower->>Contract: request_loan(borrower, amount, threshold)
+    Contract->>Contract: assert total_stake >= threshold
+    Contract->>Token: transfer amount to Borrower
+    Token-->>Borrower: loan disbursed
+
+    Borrower->>Token: transfer repayment to Contract
+    Token-->>Contract: repayment received
+    Borrower->>Contract: repay(borrower, payment)
+    Contract->>Token: return stake + 2% yield to Voucher
+    Token-->>Voucher: stake + yield
+```
+
+### Loan Lifecycle: Slash Flow
+
+```mermaid
+sequenceDiagram
+    actor Voucher
+    actor Borrower
+    actor Admin
+    participant Contract
+    participant Token
+
+    Voucher->>Token: transfer stake to Contract
+    Token-->>Contract: stake held
+    Voucher->>Contract: vouch(voucher, borrower, stake)
+
+    Borrower->>Contract: request_loan(borrower, amount, threshold)
+    Contract->>Contract: assert total_stake >= threshold
+    Contract->>Token: transfer amount to Borrower
+    Token-->>Borrower: loan disbursed
+
+    note over Borrower: Borrower defaults — no repayment
+
+    Admin->>Contract: slash(admin_signers, borrower)
+    Contract->>Contract: burn 50% of each voucher's stake
+    Contract-->>Voucher: 50% of stake lost
+```
+
 **Key concepts:**
 
 - **Proof of Trust (PoT):** Social collateral replaces asset collateral
@@ -351,6 +457,44 @@ graph LR
     D -->|Withdrawal| E(User Wallet)
 ```
 
+## Error Reference
+
+All contract errors are defined in `src/errors.rs` as the `ContractError` enum. Each variant is returned as a typed Soroban error — integrators can match on these values rather than parsing strings.
+
+| Code | Variant | Trigger | Resolution |
+|------|---------|---------|------------|
+| 1 | `InsufficientFunds` | Stake or amount ≤ 0 passed to `vouch`/`request_loan`; or total vouched stake is below the requested loan threshold; or contract balance is below the loan amount. | Ensure the amount is positive. For loans, verify total stake meets the threshold and the contract holds sufficient liquidity. |
+| 2 | `ActiveLoanExists` | `vouch()` called for a borrower who already has an active loan. | Wait until the existing loan is repaid or slashed before adding new vouches. |
+| 3 | `StakeOverflow` | Summing all vouched stakes for a borrower would overflow `i128`. | Reduce the number or size of vouches for this borrower. |
+| 4 | `ZeroAddress` | An admin or token address passed to `initialize`/`set_config` is the all-zeros Stellar address. | Provide a valid, non-zero address. |
+| 5 | `DuplicateVouch` | The same voucher attempts to vouch for the same borrower with the same token more than once. | Use `increase_stake` to add more stake to an existing vouch instead. |
+| 6 | `NoActiveLoan` | `repay`, `slash`, or `withdraw_vouch` called when no active loan exists for the borrower. | Confirm the borrower address and that a loan has been disbursed and not yet closed. |
+| 7 | `ContractPaused` | Any state-mutating function called while the contract is paused. | Wait for an admin to call `unpause`. |
+| 8 | `LoanPastDeadline` | Repayment attempted after the loan deadline has passed. | The loan must be resolved via `slash`. |
+| 13 | `MinStakeNotMet` | Vouch stake is below the admin-configured `min_stake`. | Increase the stake to at least `get_min_stake()` stroops. |
+| 14 | `LoanExceedsMaxAmount` | Requested loan amount exceeds the admin-configured `max_loan_amount`. | Request a smaller amount or ask an admin to raise the cap via `set_max_loan_amount`. |
+| 15 | `InsufficientVouchers` | Number of vouchers for the requested token is below the admin-configured `min_vouchers`. | Recruit more vouchers before requesting the loan. |
+| 16 | `UnauthorizedCaller` | `repay` called by an address that is not the borrower on record; or `withdraw_vouch` called by an address with no vouch for that borrower. | Ensure the transaction is signed by the correct borrower or voucher. |
+| 17 | `InvalidAmount` | A numeric parameter fails a basic validity check (e.g. negative fee BPS). | Pass a value within the documented valid range. |
+| 18 | `InvalidStateTransition` | An operation was attempted that is not valid for the loan's current status. | Check `loan_status()` before calling state-changing functions. |
+| 19 | `AlreadyInitialized` | `initialize` called on a contract that has already been initialized. | `initialize` is one-time only; no action needed. |
+| 20 | `VouchTooRecent` | A vouch was added too recently (within `MIN_VOUCH_AGE` seconds) before `request_loan` is called. | Wait for the vouch age requirement to pass before requesting the loan. |
+| 24 | `Blacklisted` | `request_loan` called by an address that an admin has blacklisted. | Contact the protocol admin. |
+| 25 | `TimelockNotFound` | A governance timelock operation references an ID that does not exist. | Verify the timelock ID returned when the operation was queued. |
+| 26 | `TimelockNotReady` | A timelocked operation is executed before its delay has elapsed. | Wait until the timelock delay has passed, then retry. |
+| 27 | `TimelockExpired` | A timelocked operation is executed after its expiry window. | Re-queue the operation and execute it within the allowed window. |
+| 28 | `NoVouchesForBorrower` | A governance slash vote is initiated for a borrower with no vouches on record. | Verify the borrower address. |
+| 29 | `VoucherNotFound` | A governance slash vote references a voucher address not in the borrower's vouch list. | Verify the voucher address. |
+| 30 | `InvalidToken` | A token address passed to `vouch` or `request_loan` is not the primary protocol token and is not in the admin-approved `allowed_tokens` list; or the address does not implement the SEP-41 token interface. | Use `get_config()` to retrieve the list of allowed tokens. |
+| 31 | `AlreadyVoted` | A voucher attempts to cast a second slash vote for the same borrower. | Each voucher may vote once per slash proposal. |
+| 32 | `SlashVoteNotFound` | `execute_slash_vote` called for a borrower with no open slash proposal. | Initiate a slash vote first via `initiate_slash_vote`. |
+| 33 | `SlashAlreadyExecuted` | A slash vote is executed more than once for the same borrower. | No action needed; the slash has already been applied. |
+| 34 | `AlreadyRepaid` | `repay` called on a loan that has already been fully repaid. | No action needed; the loan is closed. |
+
+> Errors with codes 9–12 (`PoolLengthMismatch`, `PoolEmpty`, `PoolBorrowerActiveLoan`, `PoolInsufficientFunds`) and 21–23 (`VouchCooldownActive`, `BorrowerHasActiveLoan`, `VoucherNotWhitelisted`) are reserved for pool and whitelist features currently under development.
+
+---
+
 ## Contributing
 
 Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
@@ -378,9 +522,12 @@ Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for our full guidelines on:
 
 ## Security
 
+See [SECURITY.md](SECURITY.md) for the full vulnerability disclosure policy and contact information.
+
 - Never commit `.env` files or secret keys
 - Use hardware wallets or multisig for admin keys
-- Report vulnerabilities privately — do not open public issues
+- Report vulnerabilities privately via [GitHub Security Advisories](https://github.com/your-org/QuorumCredit/security/advisories/new) — do not open public issues
+- **Dependency Scanning**: `cargo audit` runs automatically in CI. Any high-severity vulnerability will fail the build. Run manually via `cargo install cargo-audit && cargo audit`.
 
 ---
 

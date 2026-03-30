@@ -1,7 +1,9 @@
 use crate::errors::ContractError;
-use crate::helpers::{has_active_loan, require_allowed_token, require_not_paused, require_positive_amount};
+use crate::helpers::{
+    has_active_loan, require_allowed_token, require_not_paused, require_positive_amount,
+};
 use crate::types::{DataKey, VouchRecord};
-use soroban_sdk::{symbol_short, Address, Env, Vec};
+use soroban_sdk::{panic_with_error, symbol_short, Address, Env, Vec};
 
 pub fn vouch(
     env: Env,
@@ -25,8 +27,36 @@ fn do_vouch(
     // Validate numeric input: stake must be strictly positive.
     require_positive_amount(env, stake)?;
 
-    assert!(voucher != borrower, "voucher cannot vouch for self");
-    assert!(stake > 0, "stake must be greater than zero");
+    if voucher == borrower {
+        panic_with_error!(env, ContractError::UnauthorizedCaller);
+    }
+
+    // Check if borrower is blacklisted
+    if env
+        .storage()
+        .persistent()
+        .get::<DataKey, bool>(&DataKey::Blacklisted(borrower.clone()))
+        .unwrap_or(false)
+    {
+        return Err(ContractError::Blacklisted);
+    }
+
+    // Check voucher whitelist if enabled
+    let whitelist_enabled: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::WhitelistEnabled)
+        .unwrap_or(false);
+    if whitelist_enabled {
+        let is_whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherWhitelist(voucher.clone()))
+            .unwrap_or(false);
+        if !is_whitelisted {
+            return Err(ContractError::VoucherNotWhitelisted);
+        }
+    }
 
     // Validate token is allowed.
     let token_client = require_allowed_token(env, &token)?;
@@ -42,12 +72,23 @@ fn do_vouch(
     }
 
     // Rate limiting: enforce cooldown between vouch calls from the same address.
-    let _now = env.ledger().timestamp();
-    let _last: u64 = env
+    let vouch_cooldown_secs: u64 = env
         .storage()
-        .persistent()
-        .get(&DataKey::LastVouchTimestamp(voucher.clone()))
-        .unwrap_or(0);
+        .instance()
+        .get(&DataKey::VouchCooldownSecs)
+        .unwrap_or(crate::types::DEFAULT_VOUCH_COOLDOWN_SECS);
+
+    if vouch_cooldown_secs > 0 {
+        let last_vouch_time: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastVouchTimestamp(voucher.clone()))
+            .unwrap_or(0);
+        let now = env.ledger().timestamp();
+        if now < last_vouch_time + vouch_cooldown_secs {
+            return Err(ContractError::VouchCooldownActive);
+        }
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -62,10 +103,27 @@ fn do_vouch(
         }
     }
 
+    // Enforce max vouchers per borrower limit to prevent storage bloat.
+    let max_vouchers_per_borrower: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::MaxVouchersPerBorrower)
+        .unwrap_or(crate::types::DEFAULT_MAX_VOUCHERS_PER_BORROWER);
+
+    if vouches.len() >= max_vouchers_per_borrower {
+        return Err(ContractError::MaxVouchersPerBorrowerExceeded);
+    }
+
     // Reject vouch if the borrower already has an active loan — the stake
     // would be locked with no effect on the existing loan (fixes issue #13).
     if has_active_loan(env, &borrower) {
         return Err(ContractError::ActiveLoanExists);
+    }
+
+    // Issue #115: Check voucher balance before transfer to provide clear error message
+    let voucher_balance = token_client.balance(&voucher);
+    if voucher_balance < stake {
+        return Err(ContractError::InsufficientVoucherBalance);
     }
 
     // Transfer stake from voucher into the contract.
@@ -116,11 +174,12 @@ pub fn batch_vouch(
     voucher.require_auth();
     require_not_paused(&env)?;
 
-    assert!(
-        borrowers.len() == stakes.len(),
-        "borrowers and stakes length mismatch"
-    );
-    assert!(!borrowers.is_empty(), "batch cannot be empty");
+    if borrowers.len() != stakes.len() {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
+    if borrowers.is_empty() {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
 
     for i in 0..borrowers.len() {
         let borrower = borrowers.get(i).unwrap();
@@ -163,7 +222,13 @@ pub fn increase_stake(
 
     env.storage()
         .persistent()
-        .set(&DataKey::Vouches(borrower), &vouches);
+        .set(&DataKey::Vouches(borrower.clone()), &vouches);
+
+    // Issue #370: Emit event for stake increase
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("increased")),
+        (voucher, borrower, additional),
+    );
 
     Ok(())
 }
@@ -177,8 +242,12 @@ pub fn decrease_stake(
     voucher.require_auth();
     require_not_paused(&env)?;
 
-    assert!(amount > 0, "decrease amount must be greater than zero");
-    assert!(!has_active_loan(&env, &borrower), "loan already active");
+    if amount <= 0 {
+        panic_with_error!(&env, ContractError::InvalidAmount);
+    }
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -192,7 +261,9 @@ pub fn decrease_stake(
         .expect("vouch not found") as u32;
 
     let mut vouch_rec = vouches.get(idx).unwrap();
-    assert!(amount <= vouch_rec.stake, "decrease amount exceeds staked amount");
+    if amount > vouch_rec.stake {
+        panic_with_error!(&env, ContractError::InsufficientFunds);
+    }
 
     let token_client = require_allowed_token(&env, &vouch_rec.token)?;
     vouch_rec.stake -= amount;
@@ -203,12 +274,22 @@ pub fn decrease_stake(
     }
 
     if vouches.is_empty() {
-        env.storage().persistent().remove(&DataKey::Vouches(borrower));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
     } else {
-        env.storage().persistent().set(&DataKey::Vouches(borrower), &vouches);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &vouches);
     }
 
     token_client.transfer(&env.current_contract_address(), &voucher, &amount);
+
+    // Issue #371: Emit event for stake decrease
+    env.events().publish(
+        (symbol_short!("vouch"), symbol_short!("decreased")),
+        (voucher, borrower, amount),
+    );
 
     Ok(())
 }
@@ -217,7 +298,10 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
     voucher.require_auth();
     require_not_paused(&env)?;
 
-    assert!(!has_active_loan(&env, &borrower), "loan already active");
+    // Only allow withdraw before a loan is active.
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -236,9 +320,13 @@ pub fn withdraw_vouch(env: Env, voucher: Address, borrower: Address) -> Result<(
     vouches.remove(idx);
 
     if vouches.is_empty() {
-        env.storage().persistent().remove(&DataKey::Vouches(borrower.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Vouches(borrower.clone()));
     } else {
-        env.storage().persistent().set(&DataKey::Vouches(borrower.clone()), &vouches);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Vouches(borrower.clone()), &vouches);
     }
 
     let token_client = require_allowed_token(&env, &token_addr)?;
@@ -266,7 +354,9 @@ pub fn transfer_vouch(
     }
 
     // Only allow transfer before a loan is active (consistent with withdraw_vouch).
-    assert!(!has_active_loan(&env, &borrower), "loan already active");
+    if has_active_loan(&env, &borrower) {
+        return Err(ContractError::ActiveLoanExists);
+    }
 
     let mut vouches: Vec<VouchRecord> = env
         .storage()
@@ -369,7 +459,6 @@ pub fn voucher_history(env: Env, voucher: Address) -> Vec<Address> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::DataKey;
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
     use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
@@ -478,5 +567,142 @@ mod tests {
         // Test that total_vouched returns correct sum
         let result = client.total_vouched(&borrower);
         assert_eq!(result, 3_500_000);
+    }
+
+    #[test]
+    #[should_panic(expected = "DuplicateVouch")]
+    fn test_duplicate_vouch_from_same_voucher_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+
+        // First vouch should succeed
+        client.vouch(&voucher, &borrower, &1000, &token);
+
+        // Second vouch from same voucher for same borrower should panic with DuplicateVouch
+        client.vouch(&voucher, &borrower, &2000, &token);
+    }
+
+    #[test]
+    fn test_vouch_blacklisted_borrower() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Blacklist the borrower
+        client.blacklist(&Vec::from_array(&env, [admin]), &borrower);
+
+        // Attempt to vouch for blacklisted borrower should fail
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert_eq!(result, Err(Ok(ContractError::Blacklisted)));
+    }
+
+    /// Issue #375: Whitelist enforcement in do_vouch
+    #[test]
+    fn test_vouch_whitelisted_voucher_allowed() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Enable whitelist
+        client.set_whitelist_enabled(&admins, &true);
+
+        // Whitelist the voucher
+        client.whitelist_voucher(&admins, &voucher);
+
+        // Vouch should succeed
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert!(result.is_ok());
+    }
+
+    /// Issue #375: Non-whitelisted voucher rejected when whitelist enabled
+    #[test]
+    fn test_vouch_non_whitelisted_voucher_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Enable whitelist
+        client.set_whitelist_enabled(&admins, &true);
+
+        // Try to vouch without being whitelisted
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert_eq!(result, Err(Ok(ContractError::VoucherNotWhitelisted)));
+    }
+
+    /// Issue #375: Whitelist disabled by default (opt-in)
+    #[test]
+    fn test_vouch_whitelist_disabled_by_default() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register_contract(None, QuorumCreditContract);
+        let client = QuorumCreditContractClient::new(&env, &contract_id);
+
+        let deployer = Address::generate(&env);
+        let admin = create_test_admin(&env);
+        let admins = Vec::from_array(&env, [admin.clone()]);
+        let token = create_test_token(&env);
+
+        client.initialize(&deployer, &admins, &1, &token);
+
+        let voucher = Address::generate(&env);
+        let borrower = Address::generate(&env);
+        let stake = 1_000_000;
+
+        // Whitelist is disabled by default, so any voucher can vouch
+        let result = client.try_vouch(&voucher, &borrower, &stake, &token);
+        assert!(result.is_ok());
     }
 }

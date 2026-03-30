@@ -2,3 +2,9 @@
 .env
 .env.example
 test_snapshots/
+
+# WASM build artifacts
+*.wasm
+
+# Windows installer binaries
+*.exe

@@ -1,6 +1,7 @@
 #![allow(unused)]
 
-use soroban_sdk::{contract, contractclient, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractclient, contractimpl, contracttype, panic_with_error, Address, Env};
+use crate::errors::ContractError;
 
 #[contracttype]
 pub enum RepKey {
@@ -25,10 +26,9 @@ pub struct ReputationNftContract;
 impl ReputationNftContract {
     /// One-time setup: record the authorised minter (the lending contract).
     pub fn initialize(env: Env, minter: Address) {
-        assert!(
-            !env.storage().instance().has(&RepKey::Minter),
-            "already initialized"
-        );
+        if env.storage().instance().has(&RepKey::Minter) {
+            panic_with_error!(&env, ContractError::AlreadyInitialized);
+        }
         env.storage().instance().set(&RepKey::Minter, &minter);
     }
 

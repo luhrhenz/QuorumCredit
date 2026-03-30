@@ -1,0 +1,24 @@
+branches:
+  - name: main
+    protection:
+      # Prevent force pushes to the protected branch
+      allow_force_pushes: false
+      
+      # Enforce rules for repository administrators as well
+      enforce_admins: true
+
+      # Require 1 approving review from a reviewer
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+        dismiss_stale_reviews: true
+        require_code_owner_reviews: true
+
+      # Require CI to pass before merging
+      required_status_checks:
+        strict: true
+        contexts:
+          - "Rustfmt"
+          - "Clippy"
+          - "Cargo Check (wasm32)"
+          - "Tests"
+          - "Deploy to Testnet"

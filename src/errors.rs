@@ -20,6 +20,7 @@ pub enum ContractError {
     PoolInsufficientFunds = 12,
     MinStakeNotMet = 13,
     LoanExceedsMaxAmount = 14,
+    LoanBelowMinAmount = 34,
     InsufficientVouchers = 15,
     UnauthorizedCaller = 16,
     InvalidAmount = 17,
@@ -40,4 +41,7 @@ pub enum ContractError {
     AlreadyVoted = 31,
     SlashVoteNotFound = 32,
     SlashAlreadyExecuted = 33,
+    MaxVouchersPerBorrowerExceeded = 35,
+    /// Voucher has insufficient balance to stake the requested amount.
+    InsufficientVoucherBalance = 36,
 }

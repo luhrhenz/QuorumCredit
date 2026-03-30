@@ -1,0 +1,22 @@
+# Pre-commit hooks for QuorumCredit
+# Setup: pip install pre-commit && pre-commit install
+# Manual run: pre-commit run --all-files
+
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        description: Enforce Rust formatting (mirrors CI fmt check)
+        language: system
+        entry: cargo fmt --all --
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        description: Lint Rust code — same flags as CI (-D warnings)
+        language: system
+        entry: cargo clippy --all-targets -- -D warnings
+        types: [rust]
+        pass_filenames: false

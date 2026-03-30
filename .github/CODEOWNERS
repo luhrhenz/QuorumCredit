@@ -1,0 +1,3 @@
+# Require review from core maintainers for changes to the contract source
+src/lib.rs @QuorumCredit/core-maintainers
+

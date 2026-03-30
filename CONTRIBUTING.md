@@ -64,6 +64,73 @@ We follow standard Rust formatting conventions. Please run the following before 
 cargo fmt --all
 ```
 
+## ✅ CI Pipeline
+
+Every push and pull request against `main` runs four GitHub Actions jobs defined in `.github/workflows/ci.yml`:
+
+| Job | What it does |
+|---|---|
+| Rustfmt | `cargo fmt --all -- --check` — fails if any file is not formatted |
+| Clippy | `cargo clippy --all-targets -- -D warnings` — fails on any lint warning |
+| Cargo Check (wasm32) | `cargo check --target wasm32-unknown-unknown` — verifies the contract compiles to the deployment target |
+| Tests | `cargo test` — runs the full test suite on the host target |
+
+All four jobs must pass before a PR can be merged.
+
+## 🪝 Pre-commit Hooks
+
+This repository uses [pre-commit](https://pre-commit.com/) to automatically run `cargo fmt` and `cargo clippy` before every commit, keeping the codebase consistently formatted and lint-free.
+
+### Prerequisites
+
+- Python 3.7+ and `pip`
+- Rust toolchain with `rustfmt` and `clippy` components
+
+```bash
+rustup component add rustfmt clippy
+```
+
+### Setup
+
+Install the `pre-commit` tool and register the hooks with git:
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+That's it. From this point on, every `git commit` will automatically run:
+
+1. `cargo fmt --all` — formats all Rust source files
+2. `cargo clippy --all-targets -- -D warnings` — lints and fails on any warning
+
+If either check fails, the commit is blocked. Fix the reported issues and re-stage your changes before committing again.
+
+### Running hooks manually
+
+To run all hooks against every file without making a commit:
+
+```bash
+pre-commit run --all-files
+```
+
+To run a single hook by ID:
+
+```bash
+pre-commit run cargo-fmt
+pre-commit run cargo-clippy
+```
+
+### Skipping hooks (use sparingly)
+
+In exceptional cases (e.g. a WIP commit on a personal branch) you can bypass the hooks:
+
+```bash
+git commit --no-verify -m "wip: ..."
+```
+
+Do not use `--no-verify` on commits destined for `main` or any PR branch.
+
 ---
 
 *Happy Coding! 🚀*

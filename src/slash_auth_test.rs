@@ -1,7 +1,9 @@
 /// Slash Authorization Tests
 ///
-/// Verifies that slash panics when called by a non-admin address,
-/// and succeeds when called by a legitimate admin.
+/// Verifies that slash via governance (vote_slash) requires the caller to be
+/// an active voucher for the borrower, and that a non-voucher is rejected.
+/// Also verifies that a legitimate voucher holding majority stake can trigger
+/// an auto-slash when quorum is reached.
 #[cfg(test)]
 mod slash_auth_tests {
     use crate::{QuorumCreditContract, QuorumCreditContractClient};
@@ -15,6 +17,7 @@ mod slash_auth_tests {
         env: Env,
         client: QuorumCreditContractClient<'static>,
         admin: Address,
+        admin_vec: Vec<Address>,
         token_id: Address,
     }
 
@@ -37,7 +40,13 @@ mod slash_auth_tests {
         // Advance past MIN_VOUCH_AGE so vouches are eligible.
         env.ledger().with_mut(|l| l.timestamp = 120);
 
-        Setup { env, client, admin, token_id: token_id.address() }
+        Setup {
+            env,
+            client,
+            admin: admin.clone(),
+            admin_vec: admins,
+            token_id: token_id.address(),
+        }
     }
 
     fn do_vouch(s: &Setup, voucher: &Address, borrower: &Address, stake: i128) {
@@ -55,40 +64,45 @@ mod slash_auth_tests {
         );
     }
 
-    /// Calling slash with a non-admin address must be rejected.
-    /// require_admin_approval asserts the signer is a registered admin,
-    /// so passing a random address causes a host panic.
+    /// A non-voucher calling vote_slash must be rejected with VoucherNotFound.
     #[test]
-    fn test_slash_panics_when_called_by_non_admin() {
+    fn test_slash_rejected_when_called_by_non_voucher() {
         let s = setup();
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
-        let non_admin = Address::generate(&s.env);
+        let outsider = Address::generate(&s.env);
 
         do_vouch(&s, &voucher, &borrower, 1_000_000);
         do_loan(&s, &borrower);
 
-        // Pass the non-admin as the sole signer — must fail.
-        let non_admin_signers = Vec::from_array(&s.env, [non_admin.clone()]);
-        let result = s.client.try_slash(&non_admin_signers, &borrower);
-        assert!(result.is_err(), "slash must be rejected when called by a non-admin address");
+        let result = s.client.try_vote_slash(&outsider, &borrower, &true);
+        assert!(
+            result.is_err(),
+            "vote_slash must be rejected when called by a non-voucher"
+        );
     }
 
-    /// Calling slash with the registered admin must succeed.
+    /// A voucher holding 100% of stake triggers auto-slash when quorum is met.
+    /// After slash the loan status must be Defaulted.
     #[test]
-    fn test_slash_succeeds_when_called_by_admin() {
+    fn test_slash_succeeds_when_voucher_reaches_quorum() {
         let s = setup();
         let borrower = Address::generate(&s.env);
         let voucher = Address::generate(&s.env);
 
+        // Set quorum to 1 bps so a single voucher vote triggers slash immediately.
+        s.client.set_slash_vote_quorum(&s.admin_vec, &1);
+
         do_vouch(&s, &voucher, &borrower, 1_000_000);
         do_loan(&s, &borrower);
 
-        let admin_signers = Vec::from_array(&s.env, [s.admin.clone()]);
-        s.client.slash(&admin_signers, &borrower);
+        s.client.vote_slash(&voucher, &borrower, &true);
 
         // Loan must now be defaulted.
-        let loan = s.client.get_loan(&borrower).expect("loan should exist");
-        assert!(loan.defaulted, "loan should be marked defaulted after slash");
+        assert_eq!(
+            s.client.loan_status(&borrower),
+            crate::LoanStatus::Defaulted,
+            "loan should be Defaulted after slash quorum reached"
+        );
     }
 }

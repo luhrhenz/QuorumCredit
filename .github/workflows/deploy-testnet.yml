@@ -1,0 +1,85 @@
+name: Deploy Testnet Preview
+
+on:
+  push:
+    branches: [ "main", "master" ]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  deploy:
+    name: Deploy to Testnet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-cargo-deploy-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-deploy-
+
+      - name: Install Stellar CLI
+        # Use existing cache or download and install
+        run: |
+          if ! command -v stellar &> /dev/null; then
+            cargo install --locked stellar-cli
+          else
+            echo "Stellar CLI already installed."
+          fi
+
+      - name: Deploy Contract
+        id: deploy
+        env:
+          DEPLOYER_SECRET_KEY: ${{ secrets.DEPLOYER_SECRET_KEY }}
+        run: |
+          if [ -z "$DEPLOYER_SECRET_KEY" ]; then
+            echo "::error::DEPLOYER_SECRET_KEY secret is missing. Please add it to GitHub Repository Secrets."
+            exit 1
+          fi
+          
+          chmod +x ./scripts/deploy.sh
+          
+          # Run the script and save the output
+          ./scripts/deploy.sh --network testnet > deploy_output.txt
+          cat deploy_output.txt
+          
+          # Extract the CONTRACT_ID from the output
+          CONTRACT_ID=$(grep "^CONTRACT_ID=" deploy_output.txt | cut -d'=' -f2)
+          
+          if [ -z "$CONTRACT_ID" ]; then
+            echo "::error::Failed to extract CONTRACT_ID from output."
+            exit 1
+          fi
+          
+          echo "contract_id=$CONTRACT_ID" >> $GITHUB_OUTPUT
+          echo "$CONTRACT_ID" > contract_id.txt
+
+      - name: Store Contract ID as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: testnet-contract-id
+          path: contract_id.txt
+
+      - name: Notify Team via Commit Comment
+        uses: peter-evans/commit-comment@v3
+        if: success()
+        with:
+          body: |
+            ### 🚀 Testnet Deployment Preview
+            **Contract ID:** `${{ steps.deploy.outputs.contract_id }}`
+            **Network:** `testnet`
