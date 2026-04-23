@@ -428,16 +428,16 @@ pub fn get_config(env: Env) -> Config {
     config(&env)
 }
 
-pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
     require_admin_approval(&env, &admin_signers);
     require_valid_token(&env, &token).unwrap_or_else(|e| panic_with_error!(&env, e));
     let mut cfg = config(&env);
-    assert!(
-        !cfg.allowed_tokens.iter().any(|t| t == token) && token != cfg.token,
-        "token already allowed"
-    );
+    if cfg.allowed_tokens.iter().any(|t| t == token) || token == cfg.token {
+        return Err(ContractError::DuplicateToken);
+    }
     cfg.allowed_tokens.push_back(token);
     env.storage().instance().set(&DataKey::Config, &cfg);
+    Ok(())
 }
 
 pub fn remove_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {

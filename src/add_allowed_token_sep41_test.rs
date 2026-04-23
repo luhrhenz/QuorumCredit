@@ -68,6 +68,20 @@ mod add_allowed_token_sep41_tests {
         );
     }
 
+    /// Adding a duplicate token must be rejected.
+    #[test]
+    fn test_add_allowed_token_rejects_duplicate() {
+        let s = setup();
+        let admins = Vec::from_array(&s.env, [s.admin.clone()]);
+
+        let usdc = env_register_token(&s.env, &s.admin, &s.client.address);
+        s.client.add_allowed_token(&admins, &usdc);
+
+        // Try to add the same token again
+        let result = s.client.try_add_allowed_token(&admins, &usdc);
+        assert_eq!(result, Err(Ok(ContractError::DuplicateToken)));
+    }
+
     fn env_register_token(env: &Env, admin: &Address, contract_id: &Address) -> Address {
         let token = env.register_stellar_asset_contract_v2(admin.clone());
         StellarAssetClient::new(env, &token.address()).mint(contract_id, &0);

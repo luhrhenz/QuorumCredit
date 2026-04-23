@@ -47,4 +47,5 @@ pub enum ContractError {
     InsufficientVoucherBalance = 36,
     /// Voucher and borrower must be different addresses.
     SelfVouchNotAllowed = 37,
+    DuplicateToken = 38,
 }
