@@ -126,6 +126,15 @@ mod multi_asset_tests {
     }
 
     #[test]
+    fn test_add_allowed_token_rejects_invalid_token() {
+        let s = setup();
+        let admins = Vec::from_array(&s.env, [s.admin.clone()]);
+        let invalid = Address::generate(&s.env); // not a token contract
+        let result = s.client.try_add_allowed_token(&admins, &invalid);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_primary_token_always_allowed() {
         let s = setup();
         let voucher = Address::generate(&s.env);
