@@ -278,7 +278,7 @@ impl QuorumCreditContract {
         admin::set_max_loan_to_stake_ratio(env, admin_signers, ratio)
     }
 
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
         admin::add_allowed_token(env, admin_signers, token)
     }
 

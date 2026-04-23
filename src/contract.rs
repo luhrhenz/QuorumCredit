@@ -580,7 +580,7 @@ impl QuorumCreditContract {
         admin::set_max_vouchers_per_borrower(env, admin_signers, max_vouchers)
     }
 
-    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) {
+    pub fn add_allowed_token(env: Env, admin_signers: Vec<Address>, token: Address) -> Result<(), ContractError> {
         admin::add_allowed_token(env, admin_signers, token)
     }
 
