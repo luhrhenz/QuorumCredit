@@ -64,6 +64,23 @@ pub fn request_loan(
         return Err(ContractError::Blacklisted);
     }
 
+    // Borrower whitelist check: if enabled, borrower must be whitelisted.
+    let whitelist_enabled: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::BorrowerWhitelistEnabled)
+        .unwrap_or(false);
+    if whitelist_enabled {
+        let whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BorrowerWhitelist(borrower.clone()))
+            .unwrap_or(false);
+        if !whitelisted {
+            return Err(ContractError::Blacklisted);
+        }
+    }
+
     // Validate token is allowed before any other checks.
     let token_client = require_allowed_token(&env, &token_addr)?;
 
@@ -367,6 +384,14 @@ pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
 
 pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
     env.storage().persistent().get(&DataKey::Loan(loan_id))
+}
+
+pub fn get_loan_status(env: Env, loan_id: u64) -> LoanStatus {
+    env.storage()
+        .persistent()
+        .get::<DataKey, LoanRecord>(&DataKey::Loan(loan_id))
+        .map(|l| l.status)
+        .unwrap_or(LoanStatus::None)
 }
 
 pub fn is_eligible(env: Env, borrower: Address, threshold: i128) -> bool {

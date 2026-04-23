@@ -16,11 +16,15 @@ pub mod vouch;
 #[cfg(test)]
 mod bug_condition_test;
 #[cfg(test)]
+mod borrower_whitelist_test;
+#[cfg(test)]
 mod config_bps_test;
 #[cfg(test)]
 mod double_repay_test;
 #[cfg(test)]
 mod duplicate_loan_test;
+#[cfg(test)]
+mod get_loan_status_test;
 #[cfg(test)]
 mod governance_test;
 #[cfg(test)]
@@ -36,9 +40,13 @@ mod request_loan_insufficient_stake_test;
 #[cfg(test)]
 mod security_fixes_test;
 #[cfg(test)]
+mod set_min_loan_amount_test;
+#[cfg(test)]
 mod simple_double_repay_test;
 #[cfg(test)]
 mod vouch_zero_stake_test;
+#[cfg(test)]
+mod voucher_whitelist_test;
 
 pub use errors::ContractError;
 pub use types::*;
@@ -225,6 +233,42 @@ impl QuorumCreditContract {
         admin::whitelist_voucher(env, admin_signers, voucher)
     }
 
+    pub fn add_voucher_to_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+        admin::add_voucher_to_whitelist(env, admin_signers, voucher)
+    }
+
+    pub fn remove_voucher_from_whitelist(env: Env, admin_signers: Vec<Address>, voucher: Address) {
+        admin::remove_voucher_from_whitelist(env, admin_signers, voucher)
+    }
+
+    pub fn enable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::enable_voucher_whitelist(env, admin_signers)
+    }
+
+    pub fn disable_voucher_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::disable_voucher_whitelist(env, admin_signers)
+    }
+
+    pub fn add_borrower_to_whitelist(env: Env, admin_signers: Vec<Address>, borrower: Address) {
+        admin::add_borrower_to_whitelist(env, admin_signers, borrower)
+    }
+
+    pub fn remove_borrower_from_whitelist(
+        env: Env,
+        admin_signers: Vec<Address>,
+        borrower: Address,
+    ) {
+        admin::remove_borrower_from_whitelist(env, admin_signers, borrower)
+    }
+
+    pub fn enable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::enable_borrower_whitelist(env, admin_signers)
+    }
+
+    pub fn disable_borrower_whitelist(env: Env, admin_signers: Vec<Address>) {
+        admin::disable_borrower_whitelist(env, admin_signers)
+    }
+
     pub fn set_fee_treasury(env: Env, admin_signers: Vec<Address>, treasury: Address) {
         admin::set_fee_treasury(env, admin_signers, treasury)
     }
@@ -264,6 +308,14 @@ impl QuorumCreditContract {
 
     pub fn set_min_stake(env: Env, admin_signers: Vec<Address>, amount: i128) {
         admin::set_min_stake(env, admin_signers, amount)
+    }
+
+    pub fn set_min_loan_amount(
+        env: Env,
+        admin_signers: Vec<Address>,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        admin::set_min_loan_amount(env, admin_signers, amount)
     }
 
     pub fn set_max_loan_amount(env: Env, admin_signers: Vec<Address>, amount: i128) {
@@ -379,12 +431,32 @@ impl QuorumCreditContract {
         admin::is_whitelisted(env, voucher)
     }
 
+    pub fn is_voucher_whitelisted(env: Env, voucher: Address) -> bool {
+        admin::is_whitelisted(env, voucher)
+    }
+
+    pub fn is_voucher_whitelist_enabled(env: Env) -> bool {
+        admin::is_voucher_whitelist_enabled(env)
+    }
+
+    pub fn is_borrower_whitelisted(env: Env, borrower: Address) -> bool {
+        admin::is_borrower_whitelisted(env, borrower)
+    }
+
+    pub fn is_borrower_whitelist_enabled(env: Env) -> bool {
+        admin::is_borrower_whitelist_enabled(env)
+    }
+
     pub fn get_loan(env: Env, borrower: Address) -> Option<LoanRecord> {
         loan::get_loan(env, borrower)
     }
 
     pub fn get_loan_by_id(env: Env, loan_id: u64) -> Option<LoanRecord> {
         loan::get_loan_by_id(env, loan_id)
+    }
+
+    pub fn get_loan_status(env: Env, loan_id: u64) -> LoanStatus {
+        loan::get_loan_status(env, loan_id)
     }
 
     pub fn get_vouches(env: Env, borrower: Address) -> Option<Vec<VouchRecord>> {

@@ -14,6 +14,24 @@ pub fn vouch(
 ) -> Result<(), ContractError> {
     voucher.require_auth();
     require_not_paused(&env)?;
+
+    // Voucher whitelist check: if enabled, voucher must be whitelisted.
+    let whitelist_enabled: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey::VoucherWhitelistEnabled)
+        .unwrap_or(false);
+    if whitelist_enabled {
+        let whitelisted: bool = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VoucherWhitelist(voucher.clone()))
+            .unwrap_or(false);
+        if !whitelisted {
+            return Err(ContractError::VoucherNotWhitelisted);
+        }
+    }
+
     do_vouch(&env, voucher, borrower, stake, token)
 }
 
